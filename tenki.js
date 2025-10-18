@@ -886,6 +886,169 @@ const StringUtils = {
 };
 
 // ========================================
+// 店舗名称マスターモジュール
+// ========================================
+/**
+ * StoreNameMaster - 店舗名称マスターの管理
+ *
+ * 店舗の略称と正式名称の変換を管理します。
+ * キャッシング機構により、繰り返しアクセスを高速化します。
+ *
+ * @example
+ * // 正式名称を取得
+ * const officialName = StoreNameMaster.getOfficialName("テラス湘南①");
+ * // => "湘南テラスモール"
+ *
+ * // キャッシュをクリア
+ * StoreNameMaster.clearCache();
+ */
+const StoreNameMaster = {
+  /**
+   * 店舗名称マップのキャッシュ
+   * @private
+   */
+  _cache: null,
+
+  /**
+   * 店舗名称マスターデータを取得（キャッシュ使用）
+   *
+   * @returns {Object} 略称をキー、正式名称を値とするマップ
+   *
+   * @example
+   * const nameMap = StoreNameMaster.getData();
+   * // => { "テラス湘南": "湘南テラスモール", ... }
+   */
+  getData() {
+    // キャッシュがあれば返す
+    if (this._cache !== null) {
+      return this._cache;
+    }
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.STORE_NAME_MASTER_SHEET_NAME);
+
+    if (!sheet) {
+      Logger.log("店舗名称マスターシートが見つかりません");
+      this._cache = {};
+      return this._cache;
+    }
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < CONFIG.STORE_NAME_MASTER.DATA_START_ROW) {
+      Logger.log("店舗名称マスターにデータがありません");
+      this._cache = {};
+      return this._cache;
+    }
+
+    const data = sheet.getRange(
+      CONFIG.STORE_NAME_MASTER.DATA_START_ROW,
+      CONFIG.STORE_NAME_MASTER.ABBREVIATED_NAME_COL,
+      lastRow - CONFIG.STORE_NAME_MASTER.DATA_START_ROW + 1,
+      2
+    ).getValues();
+
+    const nameMap = {};
+    for (let i = 0; i < data.length; i++) {
+      const abbreviated = data[i][0];
+      const official = data[i][1];
+      if (abbreviated && abbreviated.toString().trim() !== "") {
+        nameMap[abbreviated.toString().trim()] = official || "";
+      }
+    }
+
+    Logger.log(`店舗名称マスターから${Object.keys(nameMap).length}件のデータを取得しました`);
+    this._cache = nameMap;
+    return this._cache;
+  },
+
+  /**
+   * 案件名から正式な店舗名を取得
+   *
+   * 1. 案件名から番号記号を除去してベース名を作成
+   * 2. ベース名との完全一致を検索
+   * 3. 完全一致がなければ部分一致を検索
+   *
+   * @param {string} projectName - 案件名（例: "テラス湘南①"）
+   * @returns {string|null} 正式名称、見つからない場合はnull
+   *
+   * @example
+   * StoreNameMaster.getOfficialName("テラス湘南①"); // "湘南テラスモール"
+   * StoreNameMaster.getOfficialName("不明案件"); // null
+   */
+  getOfficialName(projectName) {
+    if (!projectName) return null;
+
+    const storeNameMap = this.getData();
+
+    // 案件名から番号を除去したベース名
+    const baseName = StringUtils.extractBaseName(projectName);
+
+    // 完全一致を優先
+    if (storeNameMap[baseName]) {
+      if (ConfigManager.isDebugMode()) {
+        Logger.log(`店舗名称マスター: ${baseName} → ${storeNameMap[baseName]}`);
+      }
+      return storeNameMap[baseName];
+    }
+
+    // 部分一致で検索
+    for (const abbreviated in storeNameMap) {
+      if (baseName.indexOf(abbreviated) !== -1 || abbreviated.indexOf(baseName) !== -1) {
+        if (ConfigManager.isDebugMode()) {
+          Logger.log(`店舗名称マスター（部分一致）: ${baseName} → ${storeNameMap[abbreviated]}`);
+        }
+        return storeNameMap[abbreviated];
+      }
+    }
+
+    return null;
+  },
+
+  /**
+   * キャッシュをクリア
+   *
+   * 店舗名称マスターシートを更新した後に呼び出してください。
+   *
+   * @returns {void}
+   *
+   * @example
+   * StoreNameMaster.clearCache();
+   */
+  clearCache() {
+    this._cache = null;
+    Logger.log("店舗名称マスターのキャッシュをクリアしました");
+  },
+
+  /**
+   * 店舗名が存在するかチェック
+   *
+   * @param {string} projectName - 案件名
+   * @returns {boolean} 店舗名が見つかった場合true
+   *
+   * @example
+   * if (StoreNameMaster.exists("テラス湘南①")) {
+   *   // 処理
+   * }
+   */
+  exists(projectName) {
+    return this.getOfficialName(projectName) !== null;
+  },
+
+  /**
+   * 登録されている店舗数を取得
+   *
+   * @returns {number} 登録店舗数
+   *
+   * @example
+   * const count = StoreNameMaster.getCount(); // 15
+   */
+  getCount() {
+    const storeNameMap = this.getData();
+    return Object.keys(storeNameMap).length;
+  }
+};
+
+// ========================================
 // エラーハンドリングモジュール
 // ========================================
 /**
@@ -2122,41 +2285,12 @@ const DataAccess = {
 
   /**
    * 店舗名称マスターデータを取得
-   * @return {Object} 略称をキー、正式名称を値とするマップ
+   *
+   * @deprecated StoreNameMaster.getData()を使用してください
+   * @returns {Object} 略称をキー、正式名称を値とするマップ
    */
   getStoreNameMasterData() {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = ss.getSheetByName(CONFIG.STORE_NAME_MASTER_SHEET_NAME);
-
-    if (!sheet) {
-      Logger.log("店舗名称マスターシートが見つかりません");
-      return {};
-    }
-
-    const lastRow = sheet.getLastRow();
-    if (lastRow < CONFIG.STORE_NAME_MASTER.DATA_START_ROW) {
-      Logger.log("店舗名称マスターにデータがありません");
-      return {};
-    }
-
-    const data = sheet.getRange(
-      CONFIG.STORE_NAME_MASTER.DATA_START_ROW,
-      CONFIG.STORE_NAME_MASTER.ABBREVIATED_NAME_COL,
-      lastRow - CONFIG.STORE_NAME_MASTER.DATA_START_ROW + 1,
-      2
-    ).getValues();
-
-    const nameMap = {};
-    for (let i = 0; i < data.length; i++) {
-      const abbreviated = data[i][0];
-      const official = data[i][1];
-      if (abbreviated && abbreviated.toString().trim() !== "") {
-        nameMap[abbreviated.toString().trim()] = official || "";
-      }
-    }
-
-    Logger.log(`店舗名称マスターから${Object.keys(nameMap).length}件のデータを取得しました`);
-    return nameMap;
+    return StoreNameMaster.getData();
   },
 };
 
@@ -2339,32 +2473,15 @@ const BusinessLogic = {
   },
 
   /**
-   * 店舗名称マスターから正式名称を取得
+   * 案件名から正式な店舗名を取得
+   *
+   * @deprecated StoreNameMaster.getOfficialName()を使用してください
    * @private
-   * @param {string} projectName 案件名
-   * @return {string|null} 正式名称（見つからない場合はnull）
+   * @param {string} projectName - 案件名
+   * @returns {string|null} 正式名称
    */
   _getOfficialStoreName(projectName) {
-    const storeNameMap = DataAccess.getStoreNameMasterData();
-
-    // 案件名から番号を除去したベース名
-    const baseName = Utils.extractBaseName(projectName);
-
-    // 完全一致を優先
-    if (storeNameMap[baseName]) {
-      Logger.log(`店舗名称マスター: ${baseName} → ${storeNameMap[baseName]}`);
-      return storeNameMap[baseName];
-    }
-
-    // 部分一致で検索
-    for (const abbreviated in storeNameMap) {
-      if (baseName.indexOf(abbreviated) !== -1 || abbreviated.indexOf(baseName) !== -1) {
-        Logger.log(`店舗名称マスター（部分一致）: ${baseName} → ${storeNameMap[abbreviated]}`);
-        return storeNameMap[abbreviated];
-      }
-    }
-
-    return null;
+    return StoreNameMaster.getOfficialName(projectName);
   },
 
   _enrichShiftItem(item, resourceMap) {
@@ -2411,7 +2528,7 @@ const BusinessLogic = {
     // 内容が「店頭ヘルパー」または「軒先販売」の場合、店舗名称マスターを参照
     if (content === CONFIG.DEFAULT_CONTENTS.TENTOU_HELPER ||
         content === CONFIG.DEFAULT_CONTENTS.NOKISAKI) {
-      const officialName = this._getOfficialStoreName(item.projectName);
+      const officialName = StoreNameMaster.getOfficialName(item.projectName);
       if (officialName) {
         venue = officialName;
       }

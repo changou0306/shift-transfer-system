@@ -530,6 +530,69 @@ function testErrorHandler() {
 }
 
 // ========================================
+// StoreNameMaster Tests
+// ========================================
+
+function testStoreNameMaster() {
+  TestRunner.suite("StoreNameMaster");
+
+  // キャッシュをクリアしてテスト開始
+  StoreNameMaster.clearCache();
+
+  TestRunner.test("getData - returns object", () => {
+    const data = StoreNameMaster.getData();
+    assert.notNull(data);
+    // データはオブジェクトである
+    assert.equal(typeof data, "object");
+  });
+
+  TestRunner.test("getOfficialName - null input", () => {
+    const result = StoreNameMaster.getOfficialName(null);
+    assert.isNull(result);
+  });
+
+  TestRunner.test("getOfficialName - empty string", () => {
+    const result = StoreNameMaster.getOfficialName("");
+    assert.isNull(result);
+  });
+
+  TestRunner.test("exists - with null", () => {
+    const result = StoreNameMaster.exists(null);
+    assert.isFalse(result);
+  });
+
+  TestRunner.test("getCount - returns number", () => {
+    const count = StoreNameMaster.getCount();
+    assert.equal(typeof count, "number");
+    // カウントは0以上
+    assert.isTrue(count >= 0);
+  });
+
+  TestRunner.test("clearCache - does not throw", () => {
+    // キャッシュクリアがエラーを投げないことを確認
+    StoreNameMaster.clearCache();
+    assert.isTrue(true);
+  });
+
+  TestRunner.test("getData - caching works", () => {
+    // 1回目の呼び出し
+    const data1 = StoreNameMaster.getData();
+    // 2回目の呼び出し（キャッシュから取得されるはず）
+    const data2 = StoreNameMaster.getData();
+    // 同じオブジェクト参照であることを確認
+    assert.equal(data1, data2);
+  });
+
+  TestRunner.test("clearCache and getData - refreshes cache", () => {
+    const data1 = StoreNameMaster.getData();
+    StoreNameMaster.clearCache();
+    const data2 = StoreNameMaster.getData();
+    // キャッシュクリア後は異なるオブジェクト参照
+    assert.notEqual(data1, data2);
+  });
+}
+
+// ========================================
 // メインテスト実行関数
 // ========================================
 
@@ -547,6 +610,7 @@ function runAllTests() {
   testStringUtils();
   testConfigManager();
   testErrorHandler();
+  testStoreNameMaster();
 
   // サマリーを表示
   TestRunner.summary();
@@ -578,5 +642,11 @@ function runConfigManagerTests() {
 function runErrorHandlerTests() {
   TestRunner.reset();
   testErrorHandler();
+  TestRunner.summary();
+}
+
+function runStoreNameMasterTests() {
+  TestRunner.reset();
+  testStoreNameMaster();
   TestRunner.summary();
 }
