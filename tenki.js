@@ -1259,11 +1259,12 @@ const BusinessLogic = {
         }
       }
 
-      // パターン2: 内容名→日付（新規ロジック）
+      // パターン2: 内容名：日付範囲（新規ロジック - 修正版）
       if (patterns.length === 0) {
-        const contentFirstPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
+        // 月が含まれるパターン: ベイシア香取小見川：11/1〜3
+        const contentFirstWithMonthPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
 
-        while ((match = contentFirstPattern.exec(segment)) !== null) {
+        while ((match = contentFirstWithMonthPattern.exec(segment)) !== null) {
           const content = match[1].trim();
           const dateRange = match[2];
 
@@ -1467,13 +1468,13 @@ const BusinessLogic = {
         }
       }
 
-      // パターン2: 会場名→日付（新規ロジック）
-      // 例: ベイシア香取小見川：10/1〜3
+      // パターン2: 会場名→日付（新規ロジック - 修正版）
       // パターン1で見つからなかった場合のみ実行
       if (patterns.length === 0) {
-        const venueFirstPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
+        // 月が含まれるパターン: ベイシア香取小見川：11/1〜3
+        const venueFirstWithMonthPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
 
-        while ((match = venueFirstPattern.exec(segment)) !== null) {
+        while ((match = venueFirstWithMonthPattern.exec(segment)) !== null) {
           const venue = match[1].trim();
           const dateRange = match[2];
 
