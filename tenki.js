@@ -1181,25 +1181,47 @@ const BusinessLogic = {
     if (!scheduleText) return "";
 
     const contents = [];
-    const mainSegments = scheduleText.split(/(?=\d+\/)/);
 
-    for (const segment of mainSegments) {
-      const trimmed = segment.trim();
+    // 改行でも分割できるように拡張
+    const lines = scheduleText.split(/\n/);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
       if (!trimmed) continue;
 
-      const monthMatch = trimmed.match(/^(\d+)\//);
-      if (!monthMatch) continue;
+      const mainSegments = trimmed.split(/(?=\d+\/)/);
 
-      const month = parseInt(monthMatch[1]);
-      const patterns = this._extractDateContentPatterns(trimmed, month);
+      for (const segment of mainSegments) {
+        const seg = segment.trim();
+        if (!seg) continue;
 
-      for (const pattern of patterns) {
-        const dates = this._expandDatesFromRange(pattern.dateRange);
+        // 月を抽出（2つの方法で試みる）
+        let month = null;
 
-        if (dates.indexOf(targetDate) !== -1) {
-          const contentName = pattern.content.trim();
-          if (contentName) {
-            contents.push(contentName);
+        let monthMatch = seg.match(/^(\d+)\//);
+        if (monthMatch) {
+          month = parseInt(monthMatch[1]);
+        }
+
+        if (!month) {
+          monthMatch = seg.match(/(\d+)\//);
+          if (monthMatch) {
+            month = parseInt(monthMatch[1]);
+          }
+        }
+
+        if (!month) continue;
+
+        const patterns = this._extractDateContentPatterns(seg, month);
+
+        for (const pattern of patterns) {
+          const dates = this._expandDatesFromRange(pattern.dateRange);
+
+          if (dates.indexOf(targetDate) !== -1) {
+            const contentName = pattern.content.trim();
+            if (contentName) {
+              contents.push(contentName);
+            }
           }
         }
       }
@@ -1219,8 +1241,7 @@ const BusinessLogic = {
     const patterns = [];
 
     try {
-      // パターン1: 月/日付範囲：内容名 の形式
-      // 例: 10/3,6-7,10：店頭ヘルパー：12名
+      // パターン1: 月/日付範囲：内容名（既存ロジック）
       const withMonthPattern = /(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\n]+?)(?=\s*[：:]|\s*\d+名|\n|$)/g;
       let match;
 
@@ -1228,7 +1249,6 @@ const BusinessLogic = {
         const dateRange = match[1];
         const content = match[2].trim();
 
-        // 内容部分から余計な情報を除去
         const cleanContent = this._cleanContentText(content);
 
         if (cleanContent && cleanContent.length > 0) {
@@ -1239,8 +1259,26 @@ const BusinessLogic = {
         }
       }
 
-      // パターン2: 月なし日付範囲：内容名 の形式
-      // 例: 3,6-7：店頭ヘルパー
+      // パターン2: 内容名→日付（新規ロジック）
+      if (patterns.length === 0) {
+        const contentFirstPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
+
+        while ((match = contentFirstPattern.exec(segment)) !== null) {
+          const content = match[1].trim();
+          const dateRange = match[2];
+
+          const cleanContent = this._cleanContentText(content);
+
+          if (cleanContent && cleanContent.length > 0) {
+            patterns.push({
+              dateRange,
+              content: cleanContent,
+            });
+          }
+        }
+      }
+
+      // パターン3: 月なし（既存ロジック）
       if (patterns.length === 0) {
         const withoutMonthPattern = /(?:^|\s)([\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\d]+?)(?=[：:]|\d+[\/\-]|$)/g;
 
@@ -1350,25 +1388,50 @@ const BusinessLogic = {
     if (!scheduleText) return [];
 
     const venues = [];
-    const mainSegments = scheduleText.split(/(?=\d+\/)/);
 
-    for (const segment of mainSegments) {
-      const trimmed = segment.trim();
+    // 改行でも分割できるように拡張
+    const lines = scheduleText.split(/\n/);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
       if (!trimmed) continue;
 
-      const monthMatch = trimmed.match(/^(\d+)\//);
-      if (!monthMatch) continue;
+      // さらに月ごとに分割
+      const mainSegments = trimmed.split(/(?=\d+\/)/);
 
-      const month = parseInt(monthMatch[1]);
-      const patterns = this._extractDateVenuePatterns(trimmed, month);
+      for (const segment of mainSegments) {
+        const seg = segment.trim();
+        if (!seg) continue;
 
-      for (const pattern of patterns) {
-        const dates = this._expandDatesFromRange(pattern.dateRange);
+        // 月を抽出（2つの方法で試みる）
+        let month = null;
 
-        if (dates.indexOf(targetDate) !== -1) {
-          const venueName = pattern.venue.trim();
-          if (venueName && !/^[\d\s\-\u007E\u301C\u30FC\uFF5E〜・]+$/.test(venueName)) {
-            venues.push(venueName);
+        // 方法1: セグメントの先頭から（既存ロジック）
+        let monthMatch = seg.match(/^(\d+)\//);
+        if (monthMatch) {
+          month = parseInt(monthMatch[1]);
+        }
+
+        // 方法2: セグメント内のどこかから（新規ロジック）
+        if (!month) {
+          monthMatch = seg.match(/(\d+)\//);
+          if (monthMatch) {
+            month = parseInt(monthMatch[1]);
+          }
+        }
+
+        if (!month) continue;
+
+        const patterns = this._extractDateVenuePatterns(seg, month);
+
+        for (const pattern of patterns) {
+          const dates = this._expandDatesFromRange(pattern.dateRange);
+
+          if (dates.indexOf(targetDate) !== -1) {
+            const venueName = pattern.venue.trim();
+            if (venueName && !/^[\d\s\-\u007E\u301C\u30FC\uFF5E〜・]+$/.test(venueName)) {
+              venues.push(venueName);
+            }
           }
         }
       }
@@ -1381,7 +1444,8 @@ const BusinessLogic = {
     const patterns = [];
 
     try {
-      // パターン1: 月/日付範囲：会場名 の形式
+      // パターン1: 日付→会場名（既存ロジック）
+      // 例: 10/3,6-7：テラス湘南
       const withMonthPattern = /(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\n]+?)(?=\s*[：:]|\s*\d+名|\n|$)/g;
       let match;
 
@@ -1389,7 +1453,6 @@ const BusinessLogic = {
         const dateRange = match[1];
         const venue = match[2].trim();
 
-        // 末尾の付加情報を除去
         const cleanVenue = venue
           .replace(/[：:].*$/, '')
           .replace(/＋[^：:（）()]*$/, '')
@@ -1404,7 +1467,32 @@ const BusinessLogic = {
         }
       }
 
-      // パターン2: 月なし日付範囲：会場名 の形式
+      // パターン2: 会場名→日付（新規ロジック）
+      // 例: ベイシア香取小見川：10/1〜3
+      // パターン1で見つからなかった場合のみ実行
+      if (patterns.length === 0) {
+        const venueFirstPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
+
+        while ((match = venueFirstPattern.exec(segment)) !== null) {
+          const venue = match[1].trim();
+          const dateRange = match[2];
+
+          const cleanVenue = venue
+            .replace(/[：:].*$/, '')
+            .replace(/＋[^：:（）()]*$/, '')
+            .replace(/\s*\d+名.*$/, '')
+            .trim();
+
+          if (cleanVenue && cleanVenue.length > 0) {
+            patterns.push({
+              dateRange,
+              venue: cleanVenue,
+            });
+          }
+        }
+      }
+
+      // パターン3: 月なし日付範囲：会場名（既存ロジック）
       if (patterns.length === 0) {
         const withoutMonthPattern = /(?:^|\s)([\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\d]+?)(?=[：:]|\d+[\/\-]|$)/g;
 
