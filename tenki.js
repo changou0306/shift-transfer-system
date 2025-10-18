@@ -164,6 +164,928 @@ const CONFIG = {
 };
 
 // ========================================
+// 設定管理マネージャー (PropertiesService統合)
+// ========================================
+/**
+ * ConfigManager - 環境別設定と外部設定管理
+ *
+ * PropertiesServiceを使用して実行時設定を管理します。
+ * 開発/本番環境の切り替え、デバッグモード、外部設定の上書きが可能です。
+ *
+ * @example
+ * // デバッグモードを有効化
+ * ConfigManager.set('DEBUG_MODE', 'true');
+ *
+ * // 環境を本番に設定
+ * ConfigManager.set('ENVIRONMENT', 'production');
+ *
+ * // 設定値を取得
+ * const isDebug = ConfigManager.isDebugMode(); // true/false
+ */
+const ConfigManager = {
+  /**
+   * スクリプトプロパティから設定値を取得
+   * @param {string} key - 設定キー
+   * @param {*} defaultValue - デフォルト値
+   * @returns {string|null} 設定値
+   */
+  get(key, defaultValue = null) {
+    try {
+      const scriptProps = PropertiesService.getScriptProperties();
+      const value = scriptProps.getProperty(key);
+      return value !== null ? value : defaultValue;
+    } catch (error) {
+      Logger.log(`[ConfigManager] 設定取得エラー (key: ${key}): ${error.message}`);
+      return defaultValue;
+    }
+  },
+
+  /**
+   * スクリプトプロパティに設定値を保存
+   * @param {string} key - 設定キー
+   * @param {string} value - 設定値
+   * @returns {boolean} 成功/失敗
+   */
+  set(key, value) {
+    try {
+      const scriptProps = PropertiesService.getScriptProperties();
+      scriptProps.setProperty(key, String(value));
+      Logger.log(`[ConfigManager] 設定保存成功 (key: ${key}, value: ${value})`);
+      return true;
+    } catch (error) {
+      Logger.log(`[ConfigManager] 設定保存エラー (key: ${key}): ${error.message}`);
+      return false;
+    }
+  },
+
+  /**
+   * 複数の設定値を一括保存
+   * @param {Object} keyValuePairs - キーと値のペアのオブジェクト
+   * @returns {boolean} 成功/失敗
+   */
+  setMultiple(keyValuePairs) {
+    try {
+      const scriptProps = PropertiesService.getScriptProperties();
+      const stringifiedPairs = {};
+      for (const key in keyValuePairs) {
+        stringifiedPairs[key] = String(keyValuePairs[key]);
+      }
+      scriptProps.setProperties(stringifiedPairs);
+      Logger.log(`[ConfigManager] 一括設定保存成功 (${Object.keys(keyValuePairs).length}件)`);
+      return true;
+    } catch (error) {
+      Logger.log(`[ConfigManager] 一括設定保存エラー: ${error.message}`);
+      return false;
+    }
+  },
+
+  /**
+   * 設定値を削除
+   * @param {string} key - 設定キー
+   * @returns {boolean} 成功/失敗
+   */
+  delete(key) {
+    try {
+      const scriptProps = PropertiesService.getScriptProperties();
+      scriptProps.deleteProperty(key);
+      Logger.log(`[ConfigManager] 設定削除成功 (key: ${key})`);
+      return true;
+    } catch (error) {
+      Logger.log(`[ConfigManager] 設定削除エラー (key: ${key}): ${error.message}`);
+      return false;
+    }
+  },
+
+  /**
+   * すべての設定値を取得
+   * @returns {Object} すべての設定値
+   */
+  getAll() {
+    try {
+      const scriptProps = PropertiesService.getScriptProperties();
+      return scriptProps.getProperties();
+    } catch (error) {
+      Logger.log(`[ConfigManager] 全設定取得エラー: ${error.message}`);
+      return {};
+    }
+  },
+
+  /**
+   * 現在の環境を取得 (development/production)
+   * @returns {string} 環境名
+   */
+  getEnvironment() {
+    return this.get('ENVIRONMENT', 'production');
+  },
+
+  /**
+   * 本番環境かどうかを判定
+   * @returns {boolean} 本番環境ならtrue
+   */
+  isProduction() {
+    return this.getEnvironment() === 'production';
+  },
+
+  /**
+   * 開発環境かどうかを判定
+   * @returns {boolean} 開発環境ならtrue
+   */
+  isDevelopment() {
+    return this.getEnvironment() === 'development';
+  },
+
+  /**
+   * デバッグモードが有効かどうかを判定
+   * @returns {boolean} デバッグモードならtrue
+   */
+  isDebugMode() {
+    return this.get('DEBUG_MODE', 'false') === 'true';
+  },
+
+  /**
+   * デバッグモードを設定
+   * @param {boolean} enabled - 有効/無効
+   * @returns {boolean} 成功/失敗
+   */
+  setDebugMode(enabled) {
+    return this.set('DEBUG_MODE', enabled ? 'true' : 'false');
+  },
+
+  /**
+   * 詳細ログモードが有効かどうかを判定
+   * @returns {boolean} 詳細ログモードならtrue
+   */
+  isVerboseLogging() {
+    return this.get('VERBOSE_LOGGING', 'false') === 'true';
+  },
+
+  /**
+   * CONFIG値を上書き取得（PropertiesServiceの値を優先）
+   * @param {string} configPath - CONFIG内のパス (例: "COLORS.HEADER_BG")
+   * @returns {*} 設定値
+   */
+  getConfigValue(configPath) {
+    // PropertiesServiceに上書き設定があるかチェック
+    const overrideKey = `CONFIG_OVERRIDE_${configPath.replace(/\./g, '_')}`;
+    const override = this.get(overrideKey);
+    if (override !== null) {
+      Logger.log(`[ConfigManager] CONFIG上書き適用: ${configPath} = ${override}`);
+      return override;
+    }
+
+    // デフォルトのCONFIG値を返す
+    const keys = configPath.split('.');
+    let value = CONFIG;
+    for (const key of keys) {
+      if (value && typeof value === 'object' && key in value) {
+        value = value[key];
+      } else {
+        return undefined;
+      }
+    }
+    return value;
+  },
+
+  /**
+   * CONFIG値の上書き設定
+   * @param {string} configPath - CONFIG内のパス
+   * @param {*} value - 上書き値
+   * @returns {boolean} 成功/失敗
+   */
+  setConfigOverride(configPath, value) {
+    const overrideKey = `CONFIG_OVERRIDE_${configPath.replace(/\./g, '_')}`;
+    return this.set(overrideKey, value);
+  },
+
+  /**
+   * すべての設定をログ出力（デバッグ用）
+   */
+  logAllSettings() {
+    const allSettings = this.getAll();
+    Logger.log('=== ConfigManager 全設定 ===');
+    Logger.log(`環境: ${this.getEnvironment()}`);
+    Logger.log(`デバッグモード: ${this.isDebugMode()}`);
+    Logger.log(`詳細ログ: ${this.isVerboseLogging()}`);
+    Logger.log('--- PropertiesService ---');
+    for (const key in allSettings) {
+      Logger.log(`  ${key}: ${allSettings[key]}`);
+    }
+    Logger.log('========================');
+  }
+};
+
+// ========================================
+// 日付ユーティリティモジュール
+// ========================================
+/**
+ * DateUtils - 日付操作のユーティリティ
+ *
+ * 日付の変換、判定、フォーマット処理を提供します。
+ *
+ * @example
+ * // 日付範囲を展開
+ * const dates = DateUtils.expandDatesFromRange("11/1-3,5"); // [1, 3, 5]
+ *
+ * // 週末・祝日判定
+ * const isHoliday = DateUtils.isWeekendOrHoliday(1, 2025, 11); // true/false
+ *
+ * // 曜日名を取得
+ * const dayName = DateUtils.getDayOfWeekName(2025, 11, 1); // "金"
+ */
+const DateUtils = {
+  /**
+   * 日付範囲テキストから日付配列を展開
+   *
+   * @param {string} dateRangeText - 日付範囲テキスト (例: "11/1-3,5,7-9")
+   * @returns {number[]} 日付配列（ソート済み）
+   *
+   * @example
+   * DateUtils.expandDatesFromRange("11/1-3,5"); // [1, 2, 3, 5]
+   * DateUtils.expandDatesFromRange("10/1〜3,6"); // [1, 2, 3, 6]
+   */
+  expandDatesFromRange(dateRangeText) {
+    const dates = [];
+    const monthMatch = dateRangeText.match(/(\d+)\//);
+
+    if (!monthMatch) return dates;
+
+    const daysText = dateRangeText.replace(/\d+\//, "");
+
+    // 複数の区切り文字で分割（カンマ、読点、ピリオド、中黒）
+    // 重要: 範囲記号（〜～-）は区切り文字に含めない
+    const parts = daysText.split(/[,、.・]/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+
+      // 範囲指定（例: 1-4, 1〜4, 1～4）
+      const rangeMatch = trimmed.match(/^(\d+)[\-〜~～](\d+)$/);
+
+      if (rangeMatch) {
+        const startDay = parseInt(rangeMatch[1]);
+        const endDay = parseInt(rangeMatch[2]);
+        for (let day = startDay; day <= endDay; day++) {
+          if (dates.indexOf(day) === -1) {
+            dates.push(day);
+          }
+        }
+      } else {
+        // 単一日付（例: 1, 2, 3）
+        const singleMatch = trimmed.match(/^(\d+)$/);
+        if (singleMatch) {
+          const singleDay = parseInt(singleMatch[1]);
+          if (dates.indexOf(singleDay) === -1) {
+            dates.push(singleDay);
+          }
+        }
+      }
+    }
+
+    return dates.sort((a, b) => a - b);
+  },
+
+  /**
+   * 日付値から日を抽出
+   *
+   * @param {Date|string} dateValue - 日付値（Dateオブジェクトまたは"M/D"形式の文字列）
+   * @returns {number|null} 日（1-31）または null
+   *
+   * @example
+   * DateUtils.extractDay(new Date(2025, 10, 1)); // 1
+   * DateUtils.extractDay("11/15"); // 15
+   */
+  extractDay(dateValue) {
+    if (dateValue instanceof Date) {
+      return dateValue.getDate();
+    }
+    if (typeof dateValue === "string") {
+      const match = dateValue.match(/(\d+)\/(\d+)/);
+      return match ? parseInt(match[2]) : null;
+    }
+    return null;
+  },
+
+  /**
+   * 週末または祝日かどうかを判定
+   *
+   * @param {number} day - 日（1-31）
+   * @param {number} year - 年
+   * @param {number} month - 月（1-12）
+   * @returns {boolean} 週末または祝日ならtrue
+   *
+   * @example
+   * DateUtils.isWeekendOrHoliday(1, 2025, 1); // true (1/1は祝日)
+   * DateUtils.isWeekendOrHoliday(15, 2025, 11); // false (平日)
+   */
+  isWeekendOrHoliday(day, year, month) {
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const dateStr = `${month}/${day}`;
+    const isHoliday = CONFIG.HOLIDAYS_2025.indexOf(dateStr) !== -1;
+    return dayOfWeek === 0 || dayOfWeek === 6 || isHoliday;
+  },
+
+  /**
+   * 祝日かどうかを判定（週末を除く）
+   *
+   * @param {number} day - 日（1-31）
+   * @param {number} month - 月（1-12）
+   * @returns {boolean} 祝日ならtrue
+   *
+   * @example
+   * DateUtils.isHoliday(1, 1); // true (元日)
+   * DateUtils.isHoliday(15, 11); // false
+   */
+  isHoliday(day, month) {
+    const dateStr = `${month}/${day}`;
+    return CONFIG.HOLIDAYS_2025.indexOf(dateStr) !== -1;
+  },
+
+  /**
+   * 曜日名を取得
+   *
+   * @param {number} year - 年
+   * @param {number} month - 月（1-12）
+   * @param {number} day - 日（1-31）
+   * @returns {string} 曜日名（"日", "月", "火", "水", "木", "金", "土"）
+   *
+   * @example
+   * DateUtils.getDayOfWeekName(2025, 11, 1); // "土"
+   */
+  getDayOfWeekName(year, month, day) {
+    const date = new Date(year, month - 1, day);
+    const dayOfWeek = date.getDay();
+    const dayNames = ["日", "月", "火", "水", "木", "金", "土"];
+    return dayNames[dayOfWeek];
+  },
+
+  /**
+   * 曜日番号を取得（0=日曜, 6=土曜）
+   *
+   * @param {number} year - 年
+   * @param {number} month - 月（1-12）
+   * @param {number} day - 日（1-31）
+   * @returns {number} 曜日番号（0-6）
+   *
+   * @example
+   * DateUtils.getDayOfWeek(2025, 11, 1); // 6 (土曜)
+   */
+  getDayOfWeek(year, month, day) {
+    const date = new Date(year, month - 1, day);
+    return date.getDay();
+  },
+
+  /**
+   * 指定月の日数を取得
+   *
+   * @param {number} year - 年
+   * @param {number} month - 月（1-12）
+   * @returns {number} その月の日数（28-31）
+   *
+   * @example
+   * DateUtils.getDaysInMonth(2025, 2); // 28
+   * DateUtils.getDaysInMonth(2025, 11); // 30
+   */
+  getDaysInMonth(year, month) {
+    return new Date(year, month, 0).getDate();
+  },
+
+  /**
+   * 日付配列と曜日配列を生成
+   *
+   * @param {number} year - 年
+   * @param {number} month - 月（1-12）
+   * @returns {{dates: number[], daysOfWeek: string[]}} 日付配列と曜日配列
+   *
+   * @example
+   * const {dates, daysOfWeek} = DateUtils.generateDateArrays(2025, 11);
+   * // dates: [1, 2, 3, ..., 30]
+   * // daysOfWeek: ["土", "日", "月", ..., "日"]
+   */
+  generateDateArrays(year, month) {
+    const daysInMonth = this.getDaysInMonth(year, month);
+    const dates = [];
+    const daysOfWeek = [];
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      dates.push(day);
+      daysOfWeek.push(this.getDayOfWeekName(year, month, day));
+    }
+
+    return { dates, daysOfWeek };
+  },
+
+  /**
+   * 日付文字列をフォーマット
+   *
+   * @param {Date} date - Dateオブジェクト
+   * @param {string} format - フォーマット文字列（"yyyy/MM/dd", "yyyy/MM/dd HH:mm"など）
+   * @returns {string} フォーマット済み日付文字列
+   *
+   * @example
+   * const now = new Date();
+   * DateUtils.formatDate(now, "yyyy/MM/dd"); // "2025/11/01"
+   * DateUtils.formatDate(now, "yyyy/MM/dd HH:mm"); // "2025/11/01 15:30"
+   */
+  formatDate(date, format) {
+    return Utilities.formatDate(date, "Asia/Tokyo", format);
+  },
+
+  /**
+   * 現在日時を指定フォーマットで取得
+   *
+   * @param {string} format - フォーマット文字列（デフォルト: "yyyy/MM/dd HH:mm"）
+   * @returns {string} フォーマット済み現在日時
+   *
+   * @example
+   * DateUtils.now(); // "2025/11/01 15:30"
+   * DateUtils.now("yyyy/MM/dd"); // "2025/11/01"
+   */
+  now(format = "yyyy/MM/dd HH:mm") {
+    return this.formatDate(new Date(), format);
+  }
+};
+
+// ========================================
+// 文字列ユーティリティモジュール
+// ========================================
+/**
+ * StringUtils - 文字列操作のユーティリティ
+ *
+ * 文字列の正規化、クリーニング、抽出処理を提供します。
+ *
+ * @example
+ * // 案件名から番号を除去
+ * const baseName = StringUtils.extractBaseName("テラス湘南①"); // "テラス湘南"
+ *
+ * // 時間フォーマットを正規化
+ * const time = StringUtils.normalizeTimeFormat("9:00-17:00"); // "9:00〜17:00"
+ *
+ * // 名前を前処理（括弧内を除去）
+ * const name = StringUtils.preprocessName("(退職)山田太郎"); // "山田太郎"
+ */
+const StringUtils = {
+  /**
+   * 時間フォーマットを正規化（ハイフンを波ダッシュに変換）
+   *
+   * @param {string} timeStr - 時間文字列（例: "9:00-17:00"）
+   * @returns {string} 正規化された時間文字列（例: "9:00〜17:00"）
+   *
+   * @example
+   * StringUtils.normalizeTimeFormat("9:00-17:00"); // "9:00〜17:00"
+   * StringUtils.normalizeTimeFormat("10:00~18:00"); // "10:00〜18:00"
+   */
+  normalizeTimeFormat(timeStr) {
+    if (!timeStr) return "";
+    return timeStr.replace(/[\-~～]/g, "〜");
+  },
+
+  /**
+   * 案件名から番号記号を除去してベース名を取得
+   *
+   * @param {string} projectName - 案件名（例: "テラス湘南①②"）
+   * @returns {string} ベース名（例: "テラス湘南"）
+   *
+   * @example
+   * StringUtils.extractBaseName("テラス湘南①"); // "テラス湘南"
+   * StringUtils.extractBaseName("イオンモール②③"); // "イオンモール"
+   */
+  extractBaseName(projectName) {
+    if (!projectName) return "";
+    return projectName.replace(/[①②③④⑤⑥⑦⑧⑨⑩]+$/g, "");
+  },
+
+  /**
+   * 名前を前処理（括弧内の退職情報などを除去）
+   *
+   * @param {string} name - 名前（例: "(退職)山田太郎"）
+   * @returns {string} 処理済み名前（例: "山田太郎"）
+   *
+   * @example
+   * StringUtils.preprocessName("(退職)山田太郎"); // "山田太郎"
+   * StringUtils.preprocessName("）鈴木花子"); // "鈴木花子"
+   * StringUtils.preprocessName("  佐藤次郎  "); // "佐藤次郎"
+   */
+  preprocessName(name) {
+    if (!name || typeof name !== "string") return "";
+    const trimmedName = name.trim();
+    if (trimmedName === "") return "";
+    // 括弧で始まり括弧で終わる部分（退職情報など）を除去
+    const processedName = trimmedName.replace(/^[^）)]*[）)]\s*/, "");
+    return processedName.trim();
+  },
+
+  /**
+   * 内容テキストをクリーニング（会場名・人数などを除去）
+   *
+   * @param {string} contentText - 内容テキスト（例: "店頭ヘルパー：イオンモール＋3名"）
+   * @returns {string} クリーニング済み内容（例: "店頭ヘルパー"）
+   *
+   * @example
+   * StringUtils.cleanContentText("店頭ヘルパー：イオン"); // "店頭ヘルパー"
+   * StringUtils.cleanContentText("軒先販売＋場所代 12名"); // "軒先販売"
+   */
+  cleanContentText(contentText) {
+    if (!contentText) return "";
+
+    // 会場名以降を除去（会場名は別途取得するため）
+    const cleaned = contentText
+      .split(/[：:]/)[0]  // 最初のコロンまで
+      .replace(/＋[^：:（）()]*$/, '')  // 末尾の「＋〜」を除去
+      .replace(/\s*\d+名.*$/, '')  // 「12名」などを除去
+      .trim();
+
+    return cleaned;
+  },
+
+  /**
+   * 会場名テキストをクリーニング（追加情報を除去）
+   *
+   * @param {string} venueText - 会場テキスト
+   * @returns {string} クリーニング済み会場名
+   *
+   * @example
+   * StringUtils.cleanVenueText("イオンモール：2階"); // "イオンモール"
+   * StringUtils.cleanVenueText("ベイシア＋駐車場"); // "ベイシア"
+   */
+  cleanVenueText(venueText) {
+    if (!venueText) return "";
+
+    const cleaned = venueText
+      .split(/[：:]/)[0]
+      .replace(/＋[^：:（）()]*$/, '')
+      .replace(/\s*\d+名.*$/, '')
+      .trim();
+
+    return cleaned;
+  },
+
+  /**
+   * 文字列を指定長さで切り詰め
+   *
+   * @param {string} str - 対象文字列
+   * @param {number} maxLength - 最大長さ
+   * @param {string} suffix - 切り詰め時に付加する文字列（デフォルト: "..."）
+   * @returns {string} 切り詰め済み文字列
+   *
+   * @example
+   * StringUtils.truncate("長いテキストです", 5); // "長いテキ..."
+   * StringUtils.truncate("短い", 10); // "短い"
+   */
+  truncate(str, maxLength, suffix = "...") {
+    if (!str || str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + suffix;
+  },
+
+  /**
+   * 文字列が空または空白のみかどうかを判定
+   *
+   * @param {string} str - 対象文字列
+   * @returns {boolean} 空または空白のみならtrue
+   *
+   * @example
+   * StringUtils.isEmpty(""); // true
+   * StringUtils.isEmpty("  "); // true
+   * StringUtils.isEmpty("text"); // false
+   */
+  isEmpty(str) {
+    return !str || str.trim() === "";
+  },
+
+  /**
+   * 文字列配列から重複を除去
+   *
+   * @param {string[]} arr - 文字列配列
+   * @returns {string[]} 重複除去済み配列
+   *
+   * @example
+   * StringUtils.unique(["A", "B", "A", "C"]); // ["A", "B", "C"]
+   */
+  unique(arr) {
+    if (!Array.isArray(arr)) return [];
+    const seen = {};
+    const result = [];
+    for (const item of arr) {
+      if (item && !seen[item]) {
+        seen[item] = true;
+        result.push(item);
+      }
+    }
+    return result;
+  },
+
+  /**
+   * 改行・空白を正規化
+   *
+   * @param {string} str - 対象文字列
+   * @returns {string} 正規化済み文字列
+   *
+   * @example
+   * StringUtils.normalizeWhitespace("複数\n\n改行  と　　空白"); // "複数 改行 と 空白"
+   */
+  normalizeWhitespace(str) {
+    if (!str) return "";
+    return str.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  }
+};
+
+// ========================================
+// エラーハンドリングモジュール
+// ========================================
+/**
+ * ErrorHandler - 統一的なエラー処理
+ *
+ * エラーのログ記録、ユーザー通知、リトライ処理を提供します。
+ *
+ * @example
+ * // 基本的なエラーハンドリング
+ * ErrorHandler.handle(error, "データ取得");
+ *
+ * // リトライ付き実行
+ * const result = ErrorHandler.retry(() => someOperation(), 3);
+ *
+ * // 安全な実行（エラー時にデフォルト値を返す）
+ * const data = ErrorHandler.safe(() => getData(), []);
+ */
+const ErrorHandler = {
+  /**
+   * エラー情報を保存するキャッシュ
+   * @private
+   */
+  _errorCache: [],
+
+  /**
+   * エラーの最大保存数
+   * @private
+   */
+  _MAX_ERRORS: 100,
+
+  /**
+   * エラーをハンドリング（ログ記録とユーザー通知）
+   *
+   * @param {Error} error - エラーオブジェクト
+   * @param {string} context - エラーが発生したコンテキスト（例: "データ取得"）
+   * @param {Object} options - オプション
+   * @param {boolean} options.showAlert - ユーザーにアラートを表示するか（デフォルト: false）
+   * @param {boolean} options.logStack - スタックトレースをログに記録するか（デフォルト: false）
+   * @param {Object} options.metadata - 追加のメタデータ
+   *
+   * @example
+   * try {
+   *   // 処理
+   * } catch (error) {
+   *   ErrorHandler.handle(error, "データ取得", { showAlert: true });
+   * }
+   */
+  handle(error, context = "不明な処理", options = {}) {
+    const {
+      showAlert = false,
+      logStack = false,
+      metadata = {}
+    } = options;
+
+    const errorInfo = {
+      timestamp: DateUtils.now(),
+      context,
+      message: error.message || String(error),
+      stack: error.stack || "",
+      metadata
+    };
+
+    // エラーをキャッシュに保存
+    this._errorCache.push(errorInfo);
+    if (this._errorCache.length > this._MAX_ERRORS) {
+      this._errorCache.shift();
+    }
+
+    // ログに記録
+    Logger.log(`[エラー] ${context}: ${errorInfo.message}`);
+    if (logStack && errorInfo.stack) {
+      Logger.log(`スタックトレース:\n${errorInfo.stack}`);
+    }
+    if (Object.keys(metadata).length > 0) {
+      Logger.log(`メタデータ: ${JSON.stringify(metadata)}`);
+    }
+
+    // ユーザーに通知
+    if (showAlert) {
+      const alertMessage = `${context}中にエラーが発生しました:\n\n${errorInfo.message}`;
+      Utils.showAlert("エラー", alertMessage);
+    }
+
+    return errorInfo;
+  },
+
+  /**
+   * 非同期エラーをハンドリング
+   *
+   * @param {Promise} promise - Promise
+   * @param {string} context - コンテキスト
+   * @param {Object} options - オプション
+   * @returns {Promise<[Error|null, any]>} [エラー, 結果] のタプル
+   *
+   * @example
+   * const [error, data] = await ErrorHandler.handleAsync(fetchData(), "データ取得");
+   * if (error) {
+   *   // エラー処理
+   * }
+   */
+  async handleAsync(promise, context, options = {}) {
+    try {
+      const result = await promise;
+      return [null, result];
+    } catch (error) {
+      this.handle(error, context, options);
+      return [error, null];
+    }
+  },
+
+  /**
+   * 関数をリトライ付きで実行
+   *
+   * @param {Function} fn - 実行する関数
+   * @param {number} maxRetries - 最大リトライ回数（デフォルト: 3）
+   * @param {number} delayMs - リトライ間の遅延ミリ秒（デフォルト: 1000）
+   * @param {string} context - コンテキスト
+   * @returns {*} 関数の実行結果
+   * @throws {Error} すべてのリトライが失敗した場合
+   *
+   * @example
+   * const data = ErrorHandler.retry(
+   *   () => SpreadsheetApp.getActiveSpreadsheet(),
+   *   3,
+   *   1000,
+   *   "スプレッドシート取得"
+   * );
+   */
+  retry(fn, maxRetries = 3, delayMs = 1000, context = "処理") {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        Logger.log(`[リトライ] ${context} (試行 ${attempt}/${maxRetries})`);
+        return fn();
+      } catch (error) {
+        lastError = error;
+        Logger.log(`[リトライ失敗] ${context} (試行 ${attempt}/${maxRetries}): ${error.message}`);
+
+        if (attempt < maxRetries) {
+          Logger.log(`${delayMs}ms待機してリトライします...`);
+          Utilities.sleep(delayMs);
+        }
+      }
+    }
+
+    // すべてのリトライが失敗
+    this.handle(lastError, `${context}（${maxRetries}回リトライ後）`, {
+      showAlert: true,
+      logStack: true
+    });
+    throw lastError;
+  },
+
+  /**
+   * 関数を安全に実行（エラー時にデフォルト値を返す）
+   *
+   * @param {Function} fn - 実行する関数
+   * @param {*} defaultValue - エラー時のデフォルト値
+   * @param {string} context - コンテキスト
+   * @returns {*} 関数の実行結果またはデフォルト値
+   *
+   * @example
+   * const data = ErrorHandler.safe(
+   *   () => JSON.parse(jsonString),
+   *   {},
+   *   "JSON解析"
+   * );
+   */
+  safe(fn, defaultValue = null, context = "処理") {
+    try {
+      return fn();
+    } catch (error) {
+      this.handle(error, context, { showAlert: false, logStack: false });
+      return defaultValue;
+    }
+  },
+
+  /**
+   * エラーキャッシュを取得
+   *
+   * @param {number} limit - 取得する最大件数（デフォルト: 10）
+   * @returns {Array} エラー情報の配列
+   *
+   * @example
+   * const recentErrors = ErrorHandler.getErrors(5);
+   */
+  getErrors(limit = 10) {
+    const errors = this._errorCache.slice();
+    return errors.slice(-limit).reverse();
+  },
+
+  /**
+   * エラーキャッシュをクリア
+   *
+   * @example
+   * ErrorHandler.clearErrors();
+   */
+  clearErrors() {
+    this._errorCache = [];
+    Logger.log("[ErrorHandler] エラーキャッシュをクリアしました");
+  },
+
+  /**
+   * エラーレポートを生成
+   *
+   * @param {number} limit - 含めるエラーの最大件数（デフォルト: 20）
+   * @returns {string} エラーレポート（マークダウン形式）
+   *
+   * @example
+   * const report = ErrorHandler.generateReport();
+   * Logger.log(report);
+   */
+  generateReport(limit = 20) {
+    const errors = this.getErrors(limit);
+
+    if (errors.length === 0) {
+      return "エラーはありません。";
+    }
+
+    let report = `# エラーレポート\n\n`;
+    report += `総エラー数: ${this._errorCache.length}\n`;
+    report += `最新${errors.length}件を表示\n\n`;
+    report += `---\n\n`;
+
+    for (let i = 0; i < errors.length; i++) {
+      const error = errors[i];
+      report += `## エラー ${i + 1}\n\n`;
+      report += `- **日時**: ${error.timestamp}\n`;
+      report += `- **コンテキスト**: ${error.context}\n`;
+      report += `- **メッセージ**: ${error.message}\n`;
+
+      if (Object.keys(error.metadata).length > 0) {
+        report += `- **メタデータ**: ${JSON.stringify(error.metadata)}\n`;
+      }
+
+      report += `\n`;
+    }
+
+    return report;
+  },
+
+  /**
+   * エラーレポートをログに出力
+   *
+   * @param {number} limit - 含めるエラーの最大件数（デフォルト: 20）
+   *
+   * @example
+   * ErrorHandler.logReport();
+   */
+  logReport(limit = 20) {
+    const report = this.generateReport(limit);
+    Logger.log(report);
+  },
+
+  /**
+   * デバッグモードが有効な場合のみエラーを詳細ログに記録
+   *
+   * @param {Error} error - エラーオブジェクト
+   * @param {string} context - コンテキスト
+   * @param {Object} metadata - メタデータ
+   *
+   * @example
+   * ErrorHandler.debug(error, "データ処理", { userId: 123 });
+   */
+  debug(error, context = "デバッグ", metadata = {}) {
+    if (ConfigManager.isDebugMode()) {
+      this.handle(error, `[DEBUG] ${context}`, {
+        showAlert: false,
+        logStack: true,
+        metadata
+      });
+    }
+  },
+
+  /**
+   * 致命的なエラーをハンドリング（必ずユーザーに通知）
+   *
+   * @param {Error} error - エラーオブジェクト
+   * @param {string} context - コンテキスト
+   * @param {Object} metadata - メタデータ
+   *
+   * @example
+   * ErrorHandler.fatal(error, "データ保存失敗");
+   */
+  fatal(error, context = "致命的エラー", metadata = {}) {
+    this.handle(error, context, {
+      showAlert: true,
+      logStack: true,
+      metadata
+    });
+  }
+};
+
+// ========================================
 // 設定管理モジュール
 // ========================================
 const SettingsManager = {
@@ -293,6 +1215,15 @@ function onOpen() {
     .addItem("📄 マスターシート更新", "updateMasterSheet")
     .addItem("🔄 月プルダウン更新", "updateMonthDropdown")
     .addItem("⚙️ マスター初期設定", "initializeMasterSheet")
+    .addSeparator()
+    .addSubMenu(ui.createMenu("🔧 システム設定")
+      .addItem("🐛 デバッグモード切替", "toggleDebugMode")
+      .addItem("📊 詳細ログ切替", "toggleVerboseLogging")
+      .addItem("📝 全設定表示", "showAllSettings")
+      .addItem("🔄 設定リセット", "resetAllSettings")
+      .addSeparator()
+      .addItem("⚠️ エラーレポート表示", "showErrorReport")
+      .addItem("🗑️ エラーログクリア", "clearErrorLog"))
     .addToUi();
 }
 
@@ -322,6 +1253,215 @@ function updateMonthDropdown() {
 }
 
 // ========================================
+// システム設定メニュー関数
+// ========================================
+
+/**
+ * デバッグモードを切り替え
+ */
+function toggleDebugMode() {
+  try {
+    const currentMode = ConfigManager.isDebugMode();
+    ConfigManager.setDebugMode(!currentMode);
+    const newMode = ConfigManager.isDebugMode();
+
+    Utils.showAlert(
+      "デバッグモード",
+      `デバッグモードを${newMode ? '有効' : '無効'}にしました。\n\n` +
+      `現在の状態: ${newMode ? 'ON' : 'OFF'}\n\n` +
+      `※ログ出力量が${newMode ? '増加' : '減少'}します。`
+    );
+
+    Logger.log(`[システム] デバッグモード変更: ${currentMode} → ${newMode}`);
+  } catch (error) {
+    Logger.log(`デバッグモード切替エラー: ${error.message}`);
+    Utils.showAlert("エラー", `設定変更中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+/**
+ * 詳細ログモードを切り替え
+ */
+function toggleVerboseLogging() {
+  try {
+    const currentMode = ConfigManager.isVerboseLogging();
+    ConfigManager.set('VERBOSE_LOGGING', currentMode ? 'false' : 'true');
+    const newMode = ConfigManager.isVerboseLogging();
+
+    Utils.showAlert(
+      "詳細ログモード",
+      `詳細ログモードを${newMode ? '有効' : '無効'}にしました。\n\n` +
+      `現在の状態: ${newMode ? 'ON' : 'OFF'}\n\n` +
+      `※会場・内容抽出処理のログが${newMode ? '詳細表示' : '通常表示'}されます。`
+    );
+
+    Logger.log(`[システム] 詳細ログモード変更: ${currentMode} → ${newMode}`);
+  } catch (error) {
+    Logger.log(`詳細ログ切替エラー: ${error.message}`);
+    Utils.showAlert("エラー", `設定変更中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+/**
+ * すべての設定を表示
+ */
+function showAllSettings() {
+  try {
+    const allSettings = ConfigManager.getAll();
+    const environment = ConfigManager.getEnvironment();
+    const debugMode = ConfigManager.isDebugMode();
+    const verboseLogging = ConfigManager.isVerboseLogging();
+
+    let message = "=== 現在のシステム設定 ===\n\n";
+    message += `環境: ${environment}\n`;
+    message += `デバッグモード: ${debugMode ? 'ON' : 'OFF'}\n`;
+    message += `詳細ログ: ${verboseLogging ? 'ON' : 'OFF'}\n\n`;
+
+    const settingCount = Object.keys(allSettings).length;
+    if (settingCount > 0) {
+      message += `--- カスタム設定 (${settingCount}件) ---\n`;
+      for (const key in allSettings) {
+        message += `${key}: ${allSettings[key]}\n`;
+      }
+    } else {
+      message += "カスタム設定なし\n";
+    }
+
+    Utils.showAlert("システム設定一覧", message);
+
+    // ログにも出力
+    ConfigManager.logAllSettings();
+  } catch (error) {
+    Logger.log(`全設定表示エラー: ${error.message}`);
+    Utils.showAlert("エラー", `設定取得中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+/**
+ * すべての設定をリセット
+ */
+function resetAllSettings() {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.alert(
+      "設定リセット確認",
+      "すべてのシステム設定をリセットしますか？\n\n" +
+      "この操作により以下の設定が削除されます：\n" +
+      "・デバッグモード\n" +
+      "・詳細ログモード\n" +
+      "・環境設定\n" +
+      "・CONFIG上書き設定\n\n" +
+      "※この操作は元に戻せません。",
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response !== ui.Button.YES) {
+      Utils.showAlert("キャンセル", "設定リセットをキャンセルしました。");
+      return;
+    }
+
+    // すべての設定を取得して削除
+    const allSettings = ConfigManager.getAll();
+    const scriptProps = PropertiesService.getScriptProperties();
+
+    let deletedCount = 0;
+    for (const key in allSettings) {
+      scriptProps.deleteProperty(key);
+      deletedCount++;
+    }
+
+    Utils.showAlert(
+      "リセット完了",
+      `${deletedCount}件の設定を削除しました。\n\n` +
+      "すべての設定がデフォルト値に戻りました。"
+    );
+
+    Logger.log(`[システム] 設定リセット完了: ${deletedCount}件削除`);
+  } catch (error) {
+    Logger.log(`設定リセットエラー: ${error.message}`);
+    Utils.showAlert("エラー", `リセット中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+/**
+ * エラーレポートを表示
+ */
+function showErrorReport() {
+  try {
+    const errors = ErrorHandler.getErrors(10);
+
+    if (errors.length === 0) {
+      Utils.showAlert(
+        "エラーレポート",
+        "記録されているエラーはありません。\n\nシステムは正常に動作しています。"
+      );
+      return;
+    }
+
+    let message = `=== 最新のエラー (${errors.length}件) ===\n\n`;
+
+    for (let i = 0; i < Math.min(errors.length, 5); i++) {
+      const error = errors[i];
+      message += `【エラー ${i + 1}】\n`;
+      message += `日時: ${error.timestamp}\n`;
+      message += `場所: ${error.context}\n`;
+      message += `内容: ${error.message}\n`;
+      if (Object.keys(error.metadata).length > 0) {
+        message += `詳細: ${JSON.stringify(error.metadata)}\n`;
+      }
+      message += `\n`;
+    }
+
+    if (errors.length > 5) {
+      message += `\n... 他${errors.length - 5}件のエラー\n`;
+    }
+
+    message += `\n※詳細はログを確認してください`;
+
+    Utils.showAlert("エラーレポート", message);
+
+    // ログにも詳細レポートを出力
+    ErrorHandler.logReport(20);
+  } catch (error) {
+    Logger.log(`エラーレポート表示エラー: ${error.message}`);
+    Utils.showAlert("エラー", `レポート生成中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+/**
+ * エラーログをクリア
+ */
+function clearErrorLog() {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.alert(
+      "エラーログクリア確認",
+      "すべてのエラーログをクリアしますか？\n\n" +
+      "※この操作は元に戻せません。",
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response !== ui.Button.YES) {
+      Utils.showAlert("キャンセル", "エラーログクリアをキャンセルしました。");
+      return;
+    }
+
+    const errorCount = ErrorHandler.getErrors().length;
+    ErrorHandler.clearErrors();
+
+    Utils.showAlert(
+      "クリア完了",
+      `${errorCount}件のエラーログをクリアしました。`
+    );
+
+    Logger.log(`[システム] エラーログクリア完了: ${errorCount}件削除`);
+  } catch (error) {
+    Logger.log(`エラーログクリアエラー: ${error.message}`);
+    Utils.showAlert("エラー", `クリア中にエラーが発生しました:\n${error.message}`);
+  }
+}
+
+// ========================================
 // ユーティリティモジュール
 // ========================================
 const Utils = {
@@ -339,38 +1479,23 @@ const Utils = {
   },
 
   extractDay(dateValue) {
-    if (dateValue instanceof Date) {
-      return dateValue.getDate();
-    }
-    if (typeof dateValue === "string") {
-      const match = dateValue.match(/(\d+)\/(\d+)/);
-      return match ? parseInt(match[2]) : null;
-    }
-    return null;
+    return DateUtils.extractDay(dateValue);
   },
 
   isWeekendOrHoliday(day, year, month) {
-    const date = new Date(year, month - 1, day);
-    const dayOfWeek = date.getDay();
-    const dateStr = `${month}/${day}`;
-    const isHoliday = CONFIG.HOLIDAYS_2025.indexOf(dateStr) !== -1;
-    return dayOfWeek === 0 || dayOfWeek === 6 || isHoliday;
+    return DateUtils.isWeekendOrHoliday(day, year, month);
   },
 
   normalizeTimeFormat(timeStr) {
-    return timeStr.replace(/[\-~～]/g, "〜");
+    return StringUtils.normalizeTimeFormat(timeStr);
   },
 
   extractBaseName(projectName) {
-    return projectName.replace(/[①②③④⑤⑥⑦⑧⑨⑩]+$/g, "");
+    return StringUtils.extractBaseName(projectName);
   },
 
   preprocessName(name) {
-    if (!name || typeof name !== "string") return "";
-    const trimmedName = name.trim();
-    if (trimmedName === "") return "";
-    const processedName = trimmedName.replace(/^[^）)]*[）)]\s*/, "");
-    return processedName.trim();
+    return StringUtils.preprocessName(name);
   },
 
   isValidName(name) {
@@ -1180,7 +2305,9 @@ const BusinessLogic = {
   _extractContentFromSchedule(scheduleText, targetDate) {
     if (!scheduleText) return "";
 
+    const settings = SettingsManager.getSettings();
     const contents = [];
+    const isVerbose = ConfigManager.isVerboseLogging();
 
     // 改行で分割
     const lines = scheduleText.split(/\n/);
@@ -1189,68 +2316,102 @@ const BusinessLogic = {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // パターンA: 内容名：月/日付範囲（内容名に日本語が含まれ、行頭から始まる）
-      // 例：店頭ヘルパー：11/1〜3
-      const contentFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z]+[^：:\d]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
-      const contentMatch = trimmed.match(contentFirstPattern);
+      // 行頭の・や•を削除
+      const cleanedLine = trimmed.replace(/^[・•]\s*/, '');
+
+      if (isVerbose) {
+        Logger.log(`\n--- [内容抽出] 処理中の行 ---`);
+        Logger.log(`元の行: "${trimmed}"`);
+        Logger.log(`クリーン後: "${cleanedLine}"`);
+      }
+
+      // パターンA: 内容名：月/日付範囲（例：店頭ヘルパー：11/1〜3）
+      const contentFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z\(\)（）\d]+[^：:]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      const contentMatch = cleanedLine.match(contentFirstPattern);
 
       if (contentMatch) {
-        const contentName = contentMatch[1].trim();
         const month = parseInt(contentMatch[2]);
-        const dateRange = contentMatch[3];
 
-        // 日付の前に「：」がある場合は除外
+        if (isVerbose) {
+          Logger.log(`パターンAマッチ: 内容名="${contentMatch[1]}", 月=${month}, 日付範囲="${contentMatch[3]}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
+
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const contentName = contentMatch[1].trim();
+        const dateRange = contentMatch[3];
         const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
 
-        // 日付範囲を展開
+        if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
         const dates = this._expandDatesFromRange(fullDateRange);
 
+        if (isVerbose) {
+          Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+          Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+        }
+
         if (dates.indexOf(targetDate) !== -1) {
+          if (isVerbose) Logger.log(`  → 内容名を追加: "${contentName}"`);
           contents.push(contentName);
         }
 
-        // このlineの処理は完了（次のlineへ）
         continue;
       }
 
-      // パターンAでマッチしなかった場合は、既存のロジックで処理
-      // 月ごとに分割
-      const mainSegments = trimmed.split(/(?=\d+\/)/);
+      // パターンB: 日付→内容名形式（例：10/1～3：店頭ヘルパー）
+      const dateFirstPattern = /^(\d{1,2})\/([^：:\n]+?)\s*[：:]\s*([^：:\n]+?)(?:\s*[：:]|\s*\d+名|\n|$)/;
+      const dateMatch = cleanedLine.match(dateFirstPattern);
 
-      for (const segment of mainSegments) {
-        const seg = segment.trim();
-        if (!seg) continue;
+      if (dateMatch) {
+        const month = parseInt(dateMatch[1]);
 
-        // 月を抽出
-        let month = null;
-
-        let monthMatch = seg.match(/^(\d+)\//);
-        if (monthMatch) {
-          month = parseInt(monthMatch[1]);
+        if (isVerbose) {
+          Logger.log(`パターンBマッチ: 月=${month}, 日付範囲="${dateMatch[2]}", 内容="${dateMatch[3]}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
         }
 
-        if (!month) {
-          monthMatch = seg.match(/(\d+)\//);
-          if (monthMatch) {
-            month = parseInt(monthMatch[1]);
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const dateRange = dateMatch[2];
+        const content = dateMatch[3].trim();
+
+        const cleanContent = this._cleanContentText(content);
+
+        if (cleanContent && cleanContent.length > 0) {
+          const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+          if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+          const dates = this._expandDatesFromRange(fullDateRange);
+
+          if (isVerbose) {
+            Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+            Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
           }
-        }
-
-        if (!month) continue;
-
-        const patterns = this._extractDateContentPatterns(seg, month);
-
-        for (const pattern of patterns) {
-          const dates = this._expandDatesFromRange(pattern.dateRange);
 
           if (dates.indexOf(targetDate) !== -1) {
-            const contentName = pattern.content.trim();
-            if (contentName) {
-              contents.push(contentName);
-            }
+            if (isVerbose) Logger.log(`  → 内容名を追加: "${cleanContent}"`);
+            contents.push(cleanContent);
           }
         }
+
+        continue;
       }
+
+      if (isVerbose) Logger.log(`どのパターンにもマッチしませんでした`);
+    }
+
+    if (isVerbose) {
+      Logger.log(`\n========================================`);
+      Logger.log(`[内容抽出] 最終リスト: [${contents.join(', ')}]`);
+      Logger.log(`========================================\n`);
     }
 
     return contents.length > 0 ? contents[0] : "";
@@ -1338,16 +2499,7 @@ const BusinessLogic = {
    * @return {string} クリーンな内容テキスト
    */
   _cleanContentText(contentText) {
-    if (!contentText) return "";
-
-    // 会場名以降を除去（会場名は別途取得するため）
-    const cleaned = contentText
-      .split(/[：:]/)[0]  // 最初のコロンまで
-      .replace(/＋[^：:（）()]*$/, '')  // 末尾の「＋〜」を除去
-      .replace(/\s*\d+名.*$/, '')  // 「12名」などを除去
-      .trim();
-
-    return cleaned;
+    return StringUtils.cleanContentText(contentText);
   },
 
   /**
@@ -1414,6 +2566,15 @@ const BusinessLogic = {
   _extractVenuesFromSchedule(scheduleText, targetDate) {
     if (!scheduleText) return [];
 
+    const settings = SettingsManager.getSettings();
+
+    Logger.log(`========================================`);
+    Logger.log(`会場抽出開始`);
+    Logger.log(`  対象年月: ${settings.targetYear}年${settings.targetMonth}月`);
+    Logger.log(`  対象日: ${targetDate}日`);
+    Logger.log(`  scheduleText:\n${scheduleText}`);
+    Logger.log(`========================================`);
+
     const venues = [];
 
     // 改行で分割
@@ -1423,68 +2584,103 @@ const BusinessLogic = {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // パターンA: 会場名：月/日付範囲（会場名に日本語が含まれ、行頭から始まる）
-      // 例：ベイシア香取小見川：11/1〜3
-      const venueFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z]+[^：:\d]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
-      const venueMatch = trimmed.match(venueFirstPattern);
+      // 行頭の・や•を削除
+      const cleanedLine = trimmed.replace(/^[・•]\s*/, '');
+
+      const isVerbose = ConfigManager.isVerboseLogging();
+      if (isVerbose) {
+        Logger.log(`\n--- 処理中の行 ---`);
+        Logger.log(`元の行: "${trimmed}"`);
+        Logger.log(`クリーン後: "${cleanedLine}"`);
+      }
+
+      // パターンA: 会場名：月/日付範囲（例：ベイシア香取小見川：11/1〜3、イオンモール多摩平の森（1Fセンターコート）：10/1～3）
+      const venueFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z\(\)（）\d]+[^：:]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      const venueMatch = cleanedLine.match(venueFirstPattern);
 
       if (venueMatch) {
-        const venueName = venueMatch[1].trim();
         const month = parseInt(venueMatch[2]);
-        const dateRange = venueMatch[3];
+        if (isVerbose) {
+          Logger.log(`パターンAマッチ: 会場名="${venueMatch[1]}", 月=${month}, 日付範囲="${venueMatch[3]}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
 
-        // 日付の前に「：」がある場合は除外（例：「日：11/1」のような誤マッチを防ぐ）
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const venueName = venueMatch[1].trim();
+        const dateRange = venueMatch[3];
         const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
 
-        // 日付範囲を展開
+        if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
         const dates = this._expandDatesFromRange(fullDateRange);
+        if (isVerbose) {
+          Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+          Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+        }
 
         if (dates.indexOf(targetDate) !== -1) {
+          if (isVerbose) Logger.log(`  → 会場名を追加: "${venueName}"`);
           venues.push(venueName);
         }
 
-        // このlineの処理は完了（次のlineへ）
         continue;
       }
 
-      // パターンAでマッチしなかった場合は、既存のロジックで処理
-      // 月ごとに分割
-      const mainSegments = trimmed.split(/(?=\d+\/)/);
+      // パターンB: 日付→会場名形式（例：10/1～3：イオンモール...）
+      const dateFirstPattern = /^(\d{1,2})\/([^：:\n]+?)\s*[：:]\s*([^：:\n]+?)(?:\s*[：:]|\s*\d+名|\n|$)/;
+      const dateMatch = cleanedLine.match(dateFirstPattern);
 
-      for (const segment of mainSegments) {
-        const seg = segment.trim();
-        if (!seg) continue;
+      if (dateMatch) {
+        const month = parseInt(dateMatch[1]);
+        const dateRange = dateMatch[2];
+        const venue = dateMatch[3].trim();
 
-        // 月を抽出
-        let month = null;
-        let monthMatch = seg.match(/^(\d+)\//);
-        if (monthMatch) {
-          month = parseInt(monthMatch[1]);
+        if (isVerbose) {
+          Logger.log(`パターンBマッチ: 月=${month}, 日付範囲="${dateRange}", 会場="${venue}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
         }
 
-        if (!month) {
-          monthMatch = seg.match(/(\d+)\//);
-          if (monthMatch) {
-            month = parseInt(monthMatch[1]);
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const cleanVenue = venue
+          .replace(/[：:].*$/, '')
+          .replace(/＋[^：:（）()]*$/, '')
+          .replace(/\s*\d+名.*$/, '')
+          .trim();
+
+        if (cleanVenue && cleanVenue.length > 0) {
+          const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+          if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+          const dates = this._expandDatesFromRange(fullDateRange);
+          if (isVerbose) {
+            Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+            Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
           }
-        }
-
-        if (!month) continue;
-
-        const patterns = this._extractDateVenuePatterns(seg, month);
-
-        for (const pattern of patterns) {
-          const dates = this._expandDatesFromRange(pattern.dateRange);
 
           if (dates.indexOf(targetDate) !== -1) {
-            const venueName = pattern.venue.trim();
-            if (venueName && !/^[\d\s\-\u007E\u301C\u30FC\uFF5E〜・]+$/.test(venueName)) {
-              venues.push(venueName);
-            }
+            if (isVerbose) Logger.log(`  → 会場名を追加: "${cleanVenue}"`);
+            venues.push(cleanVenue);
           }
         }
+
+        continue;
       }
+
+      // どちらのパターンにもマッチしない場合
+      if (isVerbose) Logger.log(`どのパターンにもマッチしませんでした`);
     }
+
+    Logger.log(`\n========================================`);
+    Logger.log(`最終的な会場リスト: [${venues.join(', ')}]`);
+    Logger.log(`========================================\n`);
 
     return venues;
   },
@@ -1492,13 +2688,19 @@ const BusinessLogic = {
   _extractDateVenuePatterns(segment, month) {
     const patterns = [];
 
+    Logger.log(`      _extractDateVenuePatterns呼び出し: segment="${segment}", month=${month}`);
+
     try {
       // パターン1: 日付→会場名（既存ロジック）
       // 例: 10/3,6-7：テラス湘南
       const withMonthPattern = /(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\n]+?)(?=\s*[：:]|\s*\d+名|\n|$)/g;
       let match;
 
+      Logger.log(`        パターン1チェック中...`);
       while ((match = withMonthPattern.exec(segment)) !== null) {
+        Logger.log(`        パターン1マッチ: "${match[0]}"`);
+        Logger.log(`          日付部分: "${match[1]}", 会場部分: "${match[2]}"`);
+
         const dateRange = match[1];
         const venue = match[2].trim();
 
@@ -1508,21 +2710,28 @@ const BusinessLogic = {
           .replace(/\s*\d+名.*$/, '')
           .trim();
 
+        Logger.log(`          クリーン後の会場名: "${cleanVenue}"`);
+
         if (cleanVenue && cleanVenue.length > 0) {
           patterns.push({
             dateRange,
             venue: cleanVenue,
           });
+          Logger.log(`          → パターンに追加`);
         }
       }
 
       // パターン2: 会場名→日付（新規ロジック - 修正版）
       // パターン1で見つからなかった場合のみ実行
       if (patterns.length === 0) {
+        Logger.log(`        パターン2チェック中...`);
         // 月が含まれるパターン: ベイシア香取小見川：11/1〜3
         const venueFirstWithMonthPattern = /([^：:\d\n]+?)\s*[：:]\s*(\d+\/[\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)/g;
 
         while ((match = venueFirstWithMonthPattern.exec(segment)) !== null) {
+          Logger.log(`        パターン2マッチ: "${match[0]}"`);
+          Logger.log(`          会場部分: "${match[1]}", 日付部分: "${match[2]}"`);
+
           const venue = match[1].trim();
           const dateRange = match[2];
 
@@ -1532,20 +2741,27 @@ const BusinessLogic = {
             .replace(/\s*\d+名.*$/, '')
             .trim();
 
+          Logger.log(`          クリーン後の会場名: "${cleanVenue}"`);
+
           if (cleanVenue && cleanVenue.length > 0) {
             patterns.push({
               dateRange,
               venue: cleanVenue,
             });
+            Logger.log(`          → パターンに追加`);
           }
         }
       }
 
       // パターン3: 月なし日付範囲：会場名（既存ロジック）
       if (patterns.length === 0) {
+        Logger.log(`        パターン3チェック中...`);
         const withoutMonthPattern = /(?:^|\s)([\d\-\u007E\u301C\u30FC\uFF5E.,〜～、・]+)\s*[：:]\s*([^：:\d]+?)(?=[：:]|\d+[\/\-]|$)/g;
 
         while ((match = withoutMonthPattern.exec(segment)) !== null) {
+          Logger.log(`        パターン3マッチ: "${match[0]}"`);
+          Logger.log(`          日付部分: "${match[1]}", 会場部分: "${match[2]}"`);
+
           const dateText = match[1].trim();
           if (!/\//.test(dateText) && /[\d]/.test(dateText)) {
             const venue = match[2].trim();
@@ -1555,69 +2771,36 @@ const BusinessLogic = {
               .replace(/\s*\d+名.*$/, '')
               .trim();
 
+            Logger.log(`          クリーン後の会場名: "${cleanVenue}"`);
+            Logger.log(`          月を付与した日付範囲: "${month}/${dateText}"`);
+
             if (cleanVenue && cleanVenue.length > 0) {
               patterns.push({
                 dateRange: `${month}/${dateText}`,
                 venue: cleanVenue,
               });
+              Logger.log(`          → パターンに追加`);
             }
           }
         }
       }
     } catch (e) {
-      Logger.log(`会場名抽出エラー: ${e.message}, segment: ${segment}`);
+      Logger.log(`        エラー: ${e.message}`);
     }
 
+    Logger.log(`      最終的なpatterns数: ${patterns.length}`);
     return patterns;
   },
 
   _expandDatesFromRange(dateRangeText) {
-    const dates = [];
-    const monthMatch = dateRangeText.match(/(\d+)\//);
-
-    if (!monthMatch) return dates;
-
-    const daysText = dateRangeText.replace(/\d+\//, "");
-
-    // 複数の区切り文字で分割（カンマ、読点、ピリオド、中黒）
-    // 重要: 範囲記号（〜～-）は区切り文字に含めない
-    const parts = daysText.split(/[,、.・]/);
-
-    for (const part of parts) {
-      const trimmed = part.trim();
-      if (!trimmed) continue;
-
-      // 範囲指定（例: 1-4, 1〜4, 1～4）
-      const rangeMatch = trimmed.match(/^(\d+)[\-〜~～](\d+)$/);
-
-      if (rangeMatch) {
-        const startDay = parseInt(rangeMatch[1]);
-        const endDay = parseInt(rangeMatch[2]);
-        for (let day = startDay; day <= endDay; day++) {
-          if (dates.indexOf(day) === -1) {
-            dates.push(day);
-          }
-        }
-      } else {
-        // 単一日付（例: 1, 2, 3）
-        const singleMatch = trimmed.match(/^(\d+)$/);
-        if (singleMatch) {
-          const singleDay = parseInt(singleMatch[1]);
-          if (dates.indexOf(singleDay) === -1) {
-            dates.push(singleDay);
-          }
-        }
-      }
-    }
-
-    return dates.sort((a, b) => a - b);
+    return DateUtils.expandDatesFromRange(dateRangeText);
   },
 
   _extractWorkingHours(hoursText, targetDate) {
     if (!hoursText || typeof hoursText !== "string") return "";
 
     const settings = SettingsManager.getSettings();
-    const normalized = hoursText.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+    const normalized = StringUtils.normalizeWhitespace(hoursText);
     const isWeekendOrHoliday = Utils.isWeekendOrHoliday(targetDate, settings.targetYear, settings.targetMonth);
 
     const weekendPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})[^0-9]*土日祝/;
@@ -1949,16 +3132,8 @@ const PersonalSheetManager = {
 
   _generateDateHeaders(sheet) {
     const settings = SettingsManager.getSettings();
-    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
-    const dates = [];
-    const daysOfWeek = [];
-    const dayNames = ["日", "月", "火", "水", "木", "金", "土"];
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const date = new Date(settings.targetYear, settings.targetMonth - 1, day);
-      dates.push(day);
-      daysOfWeek.push(dayNames[date.getDay()]);
-    }
+    const { dates, daysOfWeek } = DateUtils.generateDateArrays(settings.targetYear, settings.targetMonth);
+    const daysInMonth = dates.length;
 
     sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([dates]);
     sheet.getRange(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([daysOfWeek]);
@@ -2000,8 +3175,7 @@ const PersonalSheetManager = {
   },
 
   _checkHoliday(day, month) {
-    const dateStr = `${month}/${day}`;
-    return CONFIG.HOLIDAYS_2025.indexOf(dateStr) !== -1;
+    return DateUtils.isHoliday(day, month);
   },
 
   _applyBorders(sheet, daysInMonth) {
