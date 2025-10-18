@@ -1189,18 +1189,21 @@ const BusinessLogic = {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // ★重要：月で分割する前に、内容名：日付のパターンをチェック
-      // パターンA: 内容名：月/日付範囲（例：店頭ヘルパー：11/1〜3）
-      const contentFirstPattern = /^([^：:\d]+?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      // パターンA: 内容名：月/日付範囲（内容名に日本語が含まれ、行頭から始まる）
+      // 例：店頭ヘルパー：11/1〜3
+      const contentFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z]+[^：:\d]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
       const contentMatch = trimmed.match(contentFirstPattern);
 
       if (contentMatch) {
         const contentName = contentMatch[1].trim();
         const month = parseInt(contentMatch[2]);
-        const dateRange = contentMatch[3].trim();
+        const dateRange = contentMatch[3];
+
+        // 日付の前に「：」がある場合は除外
+        const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
 
         // 日付範囲を展開
-        const dates = this._expandDatesFromRange(`${month}/${dateRange}`);
+        const dates = this._expandDatesFromRange(fullDateRange);
 
         if (dates.indexOf(targetDate) !== -1) {
           contents.push(contentName);
@@ -1420,18 +1423,21 @@ const BusinessLogic = {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // ★重要：月で分割する前に、会場名：日付のパターンをチェック
-      // パターンA: 会場名：月/日付範囲（例：ベイシア香取小見川：11/1〜3）
-      const venueFirstPattern = /^([^：:\d]+?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      // パターンA: 会場名：月/日付範囲（会場名に日本語が含まれ、行頭から始まる）
+      // 例：ベイシア香取小見川：11/1〜3
+      const venueFirstPattern = /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z]+[^：:\d]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
       const venueMatch = trimmed.match(venueFirstPattern);
 
       if (venueMatch) {
         const venueName = venueMatch[1].trim();
         const month = parseInt(venueMatch[2]);
-        const dateRange = venueMatch[3].trim();
+        const dateRange = venueMatch[3];
+
+        // 日付の前に「：」がある場合は除外（例：「日：11/1」のような誤マッチを防ぐ）
+        const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
 
         // 日付範囲を展開
-        const dates = this._expandDatesFromRange(`${month}/${dateRange}`);
+        const dates = this._expandDatesFromRange(fullDateRange);
 
         if (dates.indexOf(targetDate) !== -1) {
           venues.push(venueName);
