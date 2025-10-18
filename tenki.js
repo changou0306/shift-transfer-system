@@ -1049,6 +1049,268 @@ const StoreNameMaster = {
 };
 
 // ========================================
+// スケジュール解析モジュール
+// ========================================
+/**
+ * ScheduleParser - スケジュールテキストの解析
+ *
+ * リソースシートのF列（スケジュール）から会場・内容・日付情報を抽出します。
+ * 正規表現パターンをキャッシュして高速化しています。
+ *
+ * @example
+ * // 会場を抽出
+ * const venues = ScheduleParser.extractVenues("ベイシア：11/1-3", 1);
+ * // => ["ベイシア"]
+ *
+ * // 内容を抽出
+ * const content = ScheduleParser.extractContent("店頭ヘルパー：11/1-3", 1);
+ * // => "店頭ヘルパー"
+ */
+const ScheduleParser = {
+  /**
+   * 正規表現パターンキャッシュ
+   * @private
+   */
+  _patterns: {
+    // スケジュール抽出用パターン
+    nameFirst: /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z()（）\d]+[^：:]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/,
+    dateFirst: /^(\d{1,2})\/([^：:\n]+?)\s*[：:]\s*([^：:\n]+?)(?:\s*[：:]|\s*\d+名|\n|$)/,
+    monthExtract: /(\d+)\//,
+    colonSplit: /[：:]/,
+  },
+
+  /**
+   * スケジュールテキストから会場を抽出
+   *
+   * @param {string} scheduleText - スケジュールテキスト（F列）
+   * @param {number} targetDate - 対象日付（1-31）
+   * @returns {Array<string>} 会場名の配列
+   *
+   * @example
+   * ScheduleParser.extractVenues("ベイシア：11/1-3", 1); // ["ベイシア"]
+   * ScheduleParser.extractVenues("11/1-3：イオン", 2); // ["イオン"]
+   */
+  extractVenues(scheduleText, targetDate) {
+    return this._extractFromSchedule(scheduleText, targetDate, 'venue');
+  },
+
+  /**
+   * スケジュールテキストから内容を抽出
+   *
+   * @param {string} scheduleText - スケジュールテキスト（F列）
+   * @param {number} targetDate - 対象日付（1-31）
+   * @returns {string} 内容（最初の1件）
+   *
+   * @example
+   * ScheduleParser.extractContent("店頭ヘルパー：11/1-3", 1); // "店頭ヘルパー"
+   */
+  extractContent(scheduleText, targetDate) {
+    return this._extractFromSchedule(scheduleText, targetDate, 'content');
+  },
+
+  /**
+   * スケジュールテキストから会場または内容を抽出（内部メソッド）
+   *
+   * @private
+   * @param {string} scheduleText - スケジュールテキスト
+   * @param {number} targetDate - 対象日付
+   * @param {'venue'|'content'} extractType - 抽出タイプ
+   * @returns {Array<string>|string} venue: 配列, content: 文字列
+   */
+  _extractFromSchedule(scheduleText, targetDate, extractType) {
+    if (!scheduleText) {
+      return extractType === 'venue' ? [] : "";
+    }
+
+    const settings = SettingsManager.getSettings();
+    const isVerbose = ConfigManager.isVerboseLogging();
+    const results = [];
+
+    const logPrefix = extractType === 'venue' ? '会場抽出' : '内容抽出';
+    if (extractType === 'venue' && isVerbose) {
+      Logger.log(`========================================`);
+      Logger.log(`${logPrefix}開始`);
+      Logger.log(`  対象年月: ${settings.targetYear}年${settings.targetMonth}月`);
+      Logger.log(`  対象日: ${targetDate}日`);
+      Logger.log(`  scheduleText:\n${scheduleText}`);
+      Logger.log(`========================================`);
+    }
+
+    const { nameFirst, dateFirst } = this._patterns;
+    const lines = scheduleText.split(/\n/);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      const cleanedLine = StringUtils.removeLeadingBullets(trimmed);
+
+      if (isVerbose) {
+        Logger.log(`\n--- [${logPrefix}] 処理中の行 ---`);
+        Logger.log(`元の行: "${trimmed}"`);
+        Logger.log(`クリーン後: "${cleanedLine}"`);
+      }
+
+      // パターンA: 名前：月/日付範囲
+      const nameMatch = cleanedLine.match(nameFirst);
+      if (nameMatch) {
+        const month = parseInt(nameMatch[2]);
+        const name = nameMatch[1].trim();
+        const dateRange = nameMatch[3];
+
+        if (isVerbose) {
+          const itemType = extractType === 'venue' ? '会場名' : '内容名';
+          Logger.log(`パターンAマッチ: ${itemType}="${name}", 月=${month}, 日付範囲="${dateRange}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
+
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const fullDateRange = StringUtils.getBeforeColon(`${month}/${dateRange}`);
+        if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+        const dates = DateUtils.expandDatesFromRange(fullDateRange);
+        if (isVerbose) {
+          Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+          Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+        }
+
+        if (dates.indexOf(targetDate) !== -1) {
+          const itemType = extractType === 'venue' ? '会場名' : '内容名';
+          if (isVerbose) Logger.log(`  → ${itemType}を追加: "${name}"`);
+          results.push(name);
+        }
+
+        continue;
+      }
+
+      // パターンB: 日付→名前形式
+      const dateMatch = cleanedLine.match(dateFirst);
+      if (dateMatch) {
+        const month = parseInt(dateMatch[1]);
+        const dateRange = dateMatch[2];
+        const rawName = dateMatch[3].trim();
+
+        if (isVerbose) {
+          const itemType = extractType === 'venue' ? '会場' : '内容';
+          Logger.log(`パターンBマッチ: 月=${month}, 日付範囲="${dateRange}", ${itemType}="${rawName}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
+
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        let cleanedName;
+        if (extractType === 'venue') {
+          cleanedName = StringUtils.cleanVenueText(rawName);
+        } else {
+          cleanedName = StringUtils.cleanContentText(rawName);
+        }
+
+        if (cleanedName && cleanedName.length > 0) {
+          const fullDateRange = StringUtils.getBeforeColon(`${month}/${dateRange}`);
+          if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+          const dates = DateUtils.expandDatesFromRange(fullDateRange);
+          if (isVerbose) {
+            Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+            Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+          }
+
+          if (dates.indexOf(targetDate) !== -1) {
+            const itemType = extractType === 'venue' ? '会場名' : '内容名';
+            if (isVerbose) Logger.log(`  → ${itemType}を追加: "${cleanedName}"`);
+            results.push(cleanedName);
+          }
+        }
+
+        continue;
+      }
+
+      if (isVerbose) Logger.log(`どのパターンにもマッチしませんでした`);
+    }
+
+    if (extractType === 'venue' && isVerbose) {
+      Logger.log(`\n========================================`);
+      Logger.log(`最終的な会場リスト: [${results.join(', ')}]`);
+      Logger.log(`========================================\n`);
+    }
+
+    return extractType === 'venue' ? results : (results.length > 0 ? results[0] : "");
+  },
+
+  /**
+   * 稼働時間を抽出
+   *
+   * 優先順位:
+   * 1. 日付指定がある場合、その日付範囲の時間
+   * 2. 土日祝/平日の条件付き時間
+   * 3. 一般的な時間パターン
+   *
+   * @param {string} hoursText - 稼働時間テキスト
+   * @param {number} targetDate - 対象日付
+   * @returns {string} 稼働時間（正規化済み）
+   *
+   * @example
+   * ScheduleParser.extractWorkingHours("11/1-3：9:00〜17:00", 2); // "9:00〜17:00"
+   * ScheduleParser.extractWorkingHours("9:00-17:00 土日祝", 6); // "9:00〜17:00"
+   */
+  extractWorkingHours(hoursText, targetDate) {
+    if (!hoursText || typeof hoursText !== 'string') return "";
+
+    const settings = SettingsManager.getSettings();
+    const normalized = StringUtils.normalizeWhitespace(hoursText);
+    const isWeekendOrHoliday = Utils.isWeekendOrHoliday(targetDate, settings.targetYear, settings.targetMonth);
+
+    // 優先順位1: 日付指定がある場合
+    const lines = hoursText.split(/\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      const monthMatch = trimmed.match(/(\d+)\//);
+      if (!monthMatch) continue;
+
+      const month = parseInt(monthMatch[1]);
+      if (month !== settings.targetMonth) continue;
+
+      const dates = DateUtils.expandDatesFromRange(trimmed);
+      if (dates.indexOf(targetDate) === -1) continue;
+
+      const parts = trimmed.split(/[：:]/);
+      if (parts.length >= 2) {
+        return StringUtils.normalizeTimeFormat(parts[1].trim());
+      }
+    }
+
+    // 優先順位2: 土日祝/平日の条件付き
+    const weekendPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})[^0-9]*土日祝/;
+    const weekdayPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})[^0-9]*平日/;
+
+    const weekendMatch = normalized.match(weekendPattern);
+    const weekdayMatch = normalized.match(weekdayPattern);
+
+    if (isWeekendOrHoliday && weekendMatch) {
+      return StringUtils.normalizeTimeFormat(weekendMatch[1]);
+    }
+    if (!isWeekendOrHoliday && weekdayMatch) {
+      return StringUtils.normalizeTimeFormat(weekdayMatch[1]);
+    }
+
+    // 優先順位3: 一般的な時間パターン
+    const generalPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})/;
+    const generalMatch = normalized.match(generalPattern);
+
+    return generalMatch ? StringUtils.normalizeTimeFormat(generalMatch[1]) : "";
+  }
+};
+
+// ========================================
 // エラーハンドリングモジュール
 // ========================================
 /**
@@ -2715,13 +2977,15 @@ const BusinessLogic = {
 
   /**
    * スケジュールテキストから特定日付の内容を抽出
+   *
+   * @deprecated ScheduleParser.extractContent()を使用してください
    * @private
    * @param {string} scheduleText スケジュールテキスト（F列）
    * @param {number} targetDate 対象日付
-   * @return {string} 内容（見つからない場合は空文字）
+   * @returns {string} 内容（見つからない場合は空文字）
    */
   _extractContentFromSchedule(scheduleText, targetDate) {
-    return this._extractFromSchedule(scheduleText, targetDate, 'content');
+    return ScheduleParser.extractContent(scheduleText, targetDate);
   },
 
   /**
@@ -2980,13 +3244,15 @@ const BusinessLogic = {
 
   /**
    * スケジュールテキストから特定日付の会場を抽出
+   *
+   * @deprecated ScheduleParser.extractVenues()を使用してください
    * @private
    * @param {string} scheduleText スケジュールテキスト（F列）
    * @param {number} targetDate 対象日付
-   * @return {Array<string>} 会場リスト
+   * @returns {Array<string>} 会場リスト
    */
   _extractVenuesFromSchedule(scheduleText, targetDate) {
-    return this._extractFromSchedule(scheduleText, targetDate, 'venue');
+    return ScheduleParser.extractVenues(scheduleText, targetDate);
   },
 
   /**
@@ -3227,30 +3493,17 @@ const BusinessLogic = {
     return DateUtils.expandDatesFromRange(dateRangeText);
   },
 
+  /**
+   * 稼働時間を抽出
+   *
+   * @deprecated ScheduleParser.extractWorkingHours()を使用してください
+   * @private
+   * @param {string} hoursText 稼働時間テキスト
+   * @param {number} targetDate 対象日付
+   * @returns {string} 稼働時間
+   */
   _extractWorkingHours(hoursText, targetDate) {
-    if (!hoursText || typeof hoursText !== "string") return "";
-
-    const settings = SettingsManager.getSettings();
-    const normalized = StringUtils.normalizeWhitespace(hoursText);
-    const isWeekendOrHoliday = Utils.isWeekendOrHoliday(targetDate, settings.targetYear, settings.targetMonth);
-
-    const weekendPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})[^0-9]*土日祝/;
-    const weekdayPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})[^0-9]*平日/;
-
-    const weekendMatch = normalized.match(weekendPattern);
-    const weekdayMatch = normalized.match(weekdayPattern);
-
-    if (isWeekendOrHoliday && weekendMatch) {
-      return Utils.normalizeTimeFormat(weekendMatch[1]);
-    }
-    if (!isWeekendOrHoliday && weekdayMatch) {
-      return Utils.normalizeTimeFormat(weekdayMatch[1]);
-    }
-
-    const generalPattern = /(\d{1,2}:\d{2}[\-〜~～]\d{1,2}:\d{2})/;
-    const generalMatch = normalized.match(generalPattern);
-
-    return generalMatch ? Utils.normalizeTimeFormat(generalMatch[1]) : "";
+    return ScheduleParser.extractWorkingHours(hoursText, targetDate);
   },
 
   addCoworkersInfo(shiftData, selectedName) {
