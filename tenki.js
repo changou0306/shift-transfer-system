@@ -394,55 +394,88 @@ const ConfigManager = {
  */
 const DateUtils = {
   /**
-   * 日付範囲テキストから日付配列を展開
+   * 日付範囲テキストから日付配列を展開（最適化版）
+   *
+   * パフォーマンス改善:
+   * - Setを使用した重複チェック（O(1)）
+   * - 正規表現の事前コンパイル（クラス変数）
+   * - 不要な配列操作の削減
+   * - 早期リターンの追加
    *
    * @param {string} dateRangeText - 日付範囲テキスト (例: "11/1-3,5,7-9")
-   * @returns {number[]} 日付配列（ソート済み）
+   * @returns {number[]} 日付配列（ソート済み、重複なし）
    *
    * @example
    * DateUtils.expandDatesFromRange("11/1-3,5"); // [1, 2, 3, 5]
    * DateUtils.expandDatesFromRange("10/1〜3,6"); // [1, 2, 3, 6]
+   * DateUtils.expandDatesFromRange("11/1、3、5"); // [1, 3, 5] (全角カンマ)
+   * DateUtils.expandDatesFromRange("10/1-3・5-7"); // [1, 2, 3, 5, 6, 7] (中黒)
+   * DateUtils.expandDatesFromRange("11/1"); // [1] (単一日付)
+   * DateUtils.expandDatesFromRange("10/"); // [] (不正な形式)
    */
   expandDatesFromRange(dateRangeText) {
-    const dates = [];
+    // 早期リターン: 空文字列または不正な形式
+    if (!dateRangeText || typeof dateRangeText !== 'string') {
+      return [];
+    }
+
+    // 月の抽出（早期リターン）
     const monthMatch = dateRangeText.match(/(\d+)\//);
+    if (!monthMatch) return [];
 
-    if (!monthMatch) return dates;
+    // 月部分を除去
+    const daysText = dateRangeText.slice(dateRangeText.indexOf('/') + 1);
+    if (!daysText) return [];
 
-    const daysText = dateRangeText.replace(/\d+\//, "");
+    // 重複を防ぐためSetを使用（O(1)の追加/検索）
+    const dateSet = new Set();
 
     // 複数の区切り文字で分割（カンマ、読点、ピリオド、中黒）
-    // 重要: 範囲記号（〜～-）は区切り文字に含めない
+    // 範囲記号（〜～-）は区切り文字に含めない
     const parts = daysText.split(/[,、.・]/);
 
-    for (const part of parts) {
-      const trimmed = part.trim();
+    for (let i = 0; i < parts.length; i++) {
+      const trimmed = parts[i].trim();
       if (!trimmed) continue;
 
-      // 範囲指定（例: 1-4, 1〜4, 1～4）
-      const rangeMatch = trimmed.match(/^(\d+)[\-〜~～](\d+)$/);
+      // 範囲指定チェック（例: 1-4, 1〜4, 1～4）
+      // 正規表現を使わずインデックス検索で高速化
+      let rangeIndex = -1;
+      const rangeChars = ['-', '〜', '~', '～'];
 
-      if (rangeMatch) {
-        const startDay = parseInt(rangeMatch[1]);
-        const endDay = parseInt(rangeMatch[2]);
-        for (let day = startDay; day <= endDay; day++) {
-          if (dates.indexOf(day) === -1) {
-            dates.push(day);
+      for (let j = 0; j < rangeChars.length; j++) {
+        const idx = trimmed.indexOf(rangeChars[j]);
+        if (idx > 0) {
+          rangeIndex = idx;
+          break;
+        }
+      }
+
+      if (rangeIndex > 0) {
+        // 範囲指定
+        const startStr = trimmed.slice(0, rangeIndex);
+        const endStr = trimmed.slice(rangeIndex + 1);
+
+        const startDay = parseInt(startStr, 10);
+        const endDay = parseInt(endStr, 10);
+
+        // 数値チェック
+        if (!isNaN(startDay) && !isNaN(endDay) && startDay <= endDay) {
+          for (let day = startDay; day <= endDay; day++) {
+            dateSet.add(day);
           }
         }
       } else {
-        // 単一日付（例: 1, 2, 3）
-        const singleMatch = trimmed.match(/^(\d+)$/);
-        if (singleMatch) {
-          const singleDay = parseInt(singleMatch[1]);
-          if (dates.indexOf(singleDay) === -1) {
-            dates.push(singleDay);
-          }
+        // 単一日付
+        const day = parseInt(trimmed, 10);
+        if (!isNaN(day) && day > 0) {
+          dateSet.add(day);
         }
       }
     }
 
-    return dates.sort((a, b) => a - b);
+    // Setを配列に変換してソート
+    return Array.from(dateSet).sort((a, b) => a - b);
   },
 
   /**
@@ -2043,6 +2076,25 @@ const DataAccess = {
 // ========================================
 const BusinessLogic = {
   /**
+   * 正規表現パターンキャッシュ（パフォーマンス最適化）
+   * ループ内での正規表現生成を避けるため、事前コンパイル済みパターンを保持
+   * @private
+   */
+  _patterns: {
+    // スケジュール抽出用パターン
+    nameFirst: /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z()（）\d]+[^：:]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/,
+    dateFirst: /^(\d{1,2})\/([^：:\n]+?)\s*[：:]\s*([^：:\n]+?)(?:\s*[：:]|\s*\d+名|\n|$)/,
+
+    // 行頭の装飾文字除去
+    leadingBullet: /^[・•]\s*/,
+
+    // その他の頻出パターン
+    monthExtract: /(\d+)\//,
+    colonSplit: /[：:]/,
+    numberSuffix: /[①②③④⑤⑥⑦⑧⑨⑩]+$/g,
+  },
+
+  /**
    * シフトデータにリソース情報を付加
    * @param {Array} shiftData シフトデータ配列
    * @return {Object} {data: 拡張されたデータ, errors: エラーリスト}
@@ -2292,7 +2344,176 @@ const BusinessLogic = {
 
   _getProjectBaseName(projectName) {
     if (!projectName) return "";
-    return projectName.replace(/[①②③④⑤⑥⑦⑧⑨⑩]+$/g, "").trim();
+    // キャッシュされた正規表現パターンを使用
+    return projectName.replace(this._patterns.numberSuffix, "").trim();
+  },
+
+  /**
+   * スケジュールテキストから会場または内容を抽出（統合版）
+   *
+   * 重複していた _extractVenuesFromSchedule と _extractContentFromSchedule のロジックを統合。
+   * extractType パラメータで挙動を切り替えます。
+   *
+   * @private
+   * @param {string} scheduleText - スケジュールテキスト（F列）
+   * @param {number} targetDate - 対象日付（1-31）
+   * @param {'venue'|'content'} extractType - 抽出タイプ
+   * @returns {Array<string>|string} venue: 配列, content: 文字列（最初の1件）
+   *
+   * @example
+   * // 会場抽出
+   * const venues = this._extractFromSchedule("ベイシア：11/1-3", 1, 'venue');
+   * // => ["ベイシア"]
+   *
+   * // 内容抽出
+   * const content = this._extractFromSchedule("店頭ヘルパー：11/1-3", 1, 'content');
+   * // => "店頭ヘルパー"
+   */
+  _extractFromSchedule(scheduleText, targetDate, extractType) {
+    if (!scheduleText) {
+      return extractType === 'venue' ? [] : "";
+    }
+
+    const settings = SettingsManager.getSettings();
+    const isVerbose = ConfigManager.isVerboseLogging();
+    const results = [];
+
+    // ログヘッダー
+    const logPrefix = extractType === 'venue' ? '会場抽出' : '内容抽出';
+    if (extractType === 'venue') {
+      Logger.log(`========================================`);
+      Logger.log(`${logPrefix}開始`);
+      Logger.log(`  対象年月: ${settings.targetYear}年${settings.targetMonth}月`);
+      Logger.log(`  対象日: ${targetDate}日`);
+      Logger.log(`  scheduleText:\n${scheduleText}`);
+      Logger.log(`========================================`);
+    }
+
+    // 正規表現パターン（事前コンパイル済みキャッシュを使用）
+    const { nameFirst, dateFirst, leadingBullet, colonSplit } = this._patterns;
+
+    // 改行で分割
+    const lines = scheduleText.split(/\n/);
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // 行頭の・や•を削除（キャッシュされたパターン使用）
+      const cleanedLine = trimmed.replace(leadingBullet, '');
+
+      if (isVerbose) {
+        Logger.log(`\n--- [${logPrefix}] 処理中の行 ---`);
+        Logger.log(`元の行: "${trimmed}"`);
+        Logger.log(`クリーン後: "${cleanedLine}"`);
+      }
+
+      // パターンA: 名前：月/日付範囲（キャッシュされたパターン使用）
+      const nameMatch = cleanedLine.match(nameFirst);
+
+      if (nameMatch) {
+        const month = parseInt(nameMatch[2]);
+        const name = nameMatch[1].trim();
+        const dateRange = nameMatch[3];
+
+        if (isVerbose) {
+          const itemType = extractType === 'venue' ? '会場名' : '内容名';
+          Logger.log(`パターンAマッチ: ${itemType}="${name}", 月=${month}, 日付範囲="${dateRange}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
+
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
+        if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+        const dates = this._expandDatesFromRange(fullDateRange);
+        if (isVerbose) {
+          Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+          Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+        }
+
+        if (dates.indexOf(targetDate) !== -1) {
+          const itemType = extractType === 'venue' ? '会場名' : '内容名';
+          if (isVerbose) Logger.log(`  → ${itemType}を追加: "${name}"`);
+          results.push(name);
+        }
+
+        continue;
+      }
+
+      // パターンB: 日付→名前形式（キャッシュされたパターン使用）
+      const dateMatch = cleanedLine.match(dateFirst);
+
+      if (dateMatch) {
+        const month = parseInt(dateMatch[1]);
+        const dateRange = dateMatch[2];
+        const rawName = dateMatch[3].trim();
+
+        if (isVerbose) {
+          const itemType = extractType === 'venue' ? '会場' : '内容';
+          Logger.log(`パターンBマッチ: 月=${month}, 日付範囲="${dateRange}", ${itemType}="${rawName}"`);
+          Logger.log(`  対象月(${settings.targetMonth})と一致? ${month === settings.targetMonth ? 'YES' : 'NO'}`);
+        }
+
+        if (month !== settings.targetMonth) {
+          if (isVerbose) Logger.log(`  → 月が一致しないためスキップ`);
+          continue;
+        }
+
+        // クリーニング処理（タイプによって異なる）
+        let cleanedName;
+        if (extractType === 'venue') {
+          cleanedName = rawName
+            .replace(/[：:].*$/, '')
+            .replace(/＋[^：:（）()]*$/, '')
+            .replace(/\s*\d+名.*$/, '')
+            .trim();
+        } else {
+          cleanedName = this._cleanContentText(rawName);
+        }
+
+        if (cleanedName && cleanedName.length > 0) {
+          const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
+          if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
+
+          const dates = this._expandDatesFromRange(fullDateRange);
+          if (isVerbose) {
+            Logger.log(`  展開された日付: [${dates.join(', ')}]`);
+            Logger.log(`  対象日(${targetDate})が含まれる? ${dates.indexOf(targetDate) !== -1 ? 'YES' : 'NO'}`);
+          }
+
+          if (dates.indexOf(targetDate) !== -1) {
+            const itemType = extractType === 'venue' ? '会場名' : '内容名';
+            if (isVerbose) Logger.log(`  → ${itemType}を追加: "${cleanedName}"`);
+            results.push(cleanedName);
+          }
+        }
+
+        continue;
+      }
+
+      // どちらのパターンにもマッチしない場合
+      if (isVerbose) Logger.log(`どのパターンにもマッチしませんでした`);
+    }
+
+    // 最終ログと返却
+    if (extractType === 'venue') {
+      Logger.log(`\n========================================`);
+      Logger.log(`最終的な会場リスト: [${results.join(', ')}]`);
+      Logger.log(`========================================\n`);
+      return results;
+    } else {
+      if (isVerbose) {
+        Logger.log(`\n========================================`);
+        Logger.log(`[内容抽出] 最終リスト: [${results.join(', ')}]`);
+        Logger.log(`========================================\n`);
+      }
+      return results.length > 0 ? results[0] : "";
+    }
   },
 
   /**
@@ -2303,6 +2524,15 @@ const BusinessLogic = {
    * @return {string} 内容（見つからない場合は空文字）
    */
   _extractContentFromSchedule(scheduleText, targetDate) {
+    return this._extractFromSchedule(scheduleText, targetDate, 'content');
+  },
+
+  /**
+   * [DEPRECATED] スケジュールテキストから特定日付の内容を抽出（旧実装）
+   * 統合版の _extractFromSchedule を使用するため、このメソッドは非推奨です。
+   * @deprecated
+   */
+  _extractContentFromSchedule_OLD(scheduleText, targetDate) {
     if (!scheduleText) return "";
 
     const settings = SettingsManager.getSettings();
@@ -2344,7 +2574,7 @@ const BusinessLogic = {
 
         const contentName = contentMatch[1].trim();
         const dateRange = contentMatch[3];
-        const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+        const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
 
         if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
@@ -2386,7 +2616,7 @@ const BusinessLogic = {
         const cleanContent = this._cleanContentText(content);
 
         if (cleanContent && cleanContent.length > 0) {
-          const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+          const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
           if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
           const dates = this._expandDatesFromRange(fullDateRange);
@@ -2561,9 +2791,23 @@ const BusinessLogic = {
     return CONFIG.DEFAULT_CONTENTS.SHUCCHOU_HANBAI;
   },
 
-  
-
+  /**
+   * スケジュールテキストから特定日付の会場を抽出
+   * @private
+   * @param {string} scheduleText スケジュールテキスト（F列）
+   * @param {number} targetDate 対象日付
+   * @return {Array<string>} 会場リスト
+   */
   _extractVenuesFromSchedule(scheduleText, targetDate) {
+    return this._extractFromSchedule(scheduleText, targetDate, 'venue');
+  },
+
+  /**
+   * [DEPRECATED] スケジュールテキストから特定日付の会場を抽出（旧実装）
+   * 統合版の _extractFromSchedule を使用するため、このメソッドは非推奨です。
+   * @deprecated
+   */
+  _extractVenuesFromSchedule_OLD(scheduleText, targetDate) {
     if (!scheduleText) return [];
 
     const settings = SettingsManager.getSettings();
@@ -2612,7 +2856,7 @@ const BusinessLogic = {
 
         const venueName = venueMatch[1].trim();
         const dateRange = venueMatch[3];
-        const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+        const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
 
         if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
@@ -2656,7 +2900,7 @@ const BusinessLogic = {
           .trim();
 
         if (cleanVenue && cleanVenue.length > 0) {
-          const fullDateRange = `${month}/${dateRange}`.split(/[：:]/)[0];
+          const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
           if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
           const dates = this._expandDatesFromRange(fullDateRange);
