@@ -3,6 +3,7 @@
 // ========================================
 const CONFIG = {
   CUSTOM_PROJECTS_SHEET_NAME: "個別案件設定",
+  STORE_NAME_MASTER_SHEET_NAME: "店舗名称マスター",
 
   SHEETS: {
     SHIFT: "シフト",
@@ -47,18 +48,16 @@ const CONFIG = {
     FOLDER_ID_LABEL_COL: 7,  // G1
     FOLDER_ID_ROW: 2,
     FOLDER_ID_COL: 7,         // G2
+
+    // プルダウン設定
+    MONTH_DROPDOWN_LABEL_ROW: 4,  // G4
+    MONTH_DROPDOWN_LABEL_COL: 7,
+    MONTH_DROPDOWN_ROW: 5,         // G5
+    MONTH_DROPDOWN_COL: 7,
+
     HEADER_ROW: 1,
     DATA_START_ROW: 2,
-    USAGE_START_ROW: 6,       // 使い方の開始行
-
-    // カレンダー設定
-    CALENDAR_YEAR_ROW: 13,
-    CALENDAR_START_COL: 7,    // G列
-    CALENDAR_END_COL: 10,     // J列
-    CALENDAR_MONTH_START_ROW: 14,
-    CALENDAR_SELECTED_COLOR: "#4A86E8",  // 青色
-    CALENDAR_ROWS: 3,
-    CALENDAR_COLS: 4,
+    USAGE_START_ROW: 7,  // カレンダー削除により位置変更
   },
 
   ID_MANAGEMENT: {
@@ -70,6 +69,14 @@ const CONFIG = {
     USAGE_START_ROW: 2,
     WARNING_COLOR: "#FF9900",  // オレンジ色
     TOTAL_COLUMNS: 2,
+  },
+
+  STORE_NAME_MASTER: {
+    ABBREVIATED_NAME_COL: 1,  // A列: 略称
+    OFFICIAL_NAME_COL: 2,     // B列: 正式名称
+    REMARKS_COL: 3,           // C列: 備考
+    HEADER_ROW: 1,
+    DATA_START_ROW: 2,
   },
 
   STORE_CONFIG: {
@@ -142,7 +149,7 @@ const CONFIG = {
     MASTER_SHEET_ID: 400,
     MASTER_LAST_UPDATE: 150,
     MASTER_ERROR: 300,
-    CALENDAR: 90,
+    MONTH_DROPDOWN: 150,  // プルダウン用の列幅
     PERSONAL_DATE_COL: 100,
     PERSONAL_HEADER_COL: 150,
   },
@@ -175,45 +182,36 @@ const SettingsManager = {
   },
 
   _getSelectedYearMonth(sheet) {
-    // 年を取得
-    const yearCell = sheet.getRange(CONFIG.MASTER_SETTINGS.CALENDAR_YEAR_ROW, CONFIG.MASTER_SETTINGS.CALENDAR_START_COL);
-    let year = yearCell.getValue();
+    // G5セルからプルダウンの値を取得
+    const value = sheet.getRange(
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_ROW,
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_COL
+    ).getValue();
 
-    // "2025年" → 2025 に変換
-    if (typeof year === 'string') {
-      year = parseInt(year.replace('年', ''));
+    if (!value) {
+      // デフォルト値
+      const today = new Date();
+      return {
+        year: today.getFullYear(),
+        month: today.getMonth() + 1
+      };
     }
 
-    if (!year || isNaN(year)) {
-      year = new Date().getFullYear();
+    // "2025年10月" の形式から抽出
+    const match = String(value).match(/(\d{4})年(\d{1,2})月/);
+
+    if (match) {
+      return {
+        year: parseInt(match[1]),
+        month: parseInt(match[2])
+      };
     }
 
-    // 選択された月を検索（大文字・小文字を区別しない）
-    const targetColor = CONFIG.MASTER_SETTINGS.CALENDAR_SELECTED_COLOR.toLowerCase();
-    let month = null;
-
-    for (let row = 0; row < 3; row++) {
-      for (let col = 0; col < 4; col++) {
-        const cellRow = CONFIG.MASTER_SETTINGS.CALENDAR_MONTH_START_ROW + row;
-        const cellCol = CONFIG.MASTER_SETTINGS.CALENDAR_START_COL + col;
-        const cell = sheet.getRange(cellRow, cellCol);
-
-        if (cell.getBackground().toLowerCase() === targetColor) {
-          month = cell.getValue();
-          break;
-        }
-      }
-      if (month) break;
-    }
-
-    // 月が選択されていない場合はデフォルト
-    if (!month) {
-      month = new Date().getMonth() + 1;
-    }
-
+    // パースできない場合はデフォルト
+    const today = new Date();
     return {
-      year,
-      month
+      year: today.getFullYear(),
+      month: today.getMonth() + 1
     };
   },
 
@@ -285,41 +283,33 @@ function onOpen() {
     .addItem("✅ チェックした人を転記", "transferCheckedMembers")
     .addSeparator()
     .addItem("📄 マスターシート更新", "updateMasterSheet")
+    .addItem("🔄 月プルダウン更新", "updateMonthDropdown")
     .addItem("⚙️ マスター初期設定", "initializeMasterSheet")
     .addToUi();
 }
 
-// セル選択時のイベント
-function onSelectionChange(e) {
-  // eが存在しない場合は終了
-  if (!e || !e.source) {
-    return;
-  }
+/**
+ * 月プルダウンを更新（メニューから呼び出し）
+ */
+function updateMonthDropdown() {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet()
+      .getSheetByName(CONFIG.SHEETS.MASTER);
 
-  const sheet = e.source.getActiveSheet();
-  const range = e.range;
-
-  // マスターシート以外は無視
-  if (sheet.getName() !== CONFIG.SHEETS.MASTER) return;
-
-  if (!range) {
-    return;
-  }
-
-  const row = range.getRow();
-  const col = range.getColumn();
-
-  // カレンダーの月セルが選択された場合
-  if (row >= CONFIG.MASTER_SETTINGS.CALENDAR_MONTH_START_ROW &&
-      row <= CONFIG.MASTER_SETTINGS.CALENDAR_MONTH_START_ROW + 2 &&
-      col >= CONFIG.MASTER_SETTINGS.CALENDAR_START_COL &&
-      col <= CONFIG.MASTER_SETTINGS.CALENDAR_END_COL) {
-
-    const selectedMonth = range.getValue();
-
-    if (selectedMonth >= 1 && selectedMonth <= 12) {
-      MasterSheetManager._selectMonth(sheet, selectedMonth);
+    if (!sheet) {
+      Utils.showAlert("エラー", "マスターシートが見つかりません");
+      return;
     }
+
+    MasterSheetManager._setupMonthDropdown(sheet);
+
+    Utils.showAlert(
+      "更新完了",
+      "月プルダウンを更新しました。\n今月と来月が選択できます。"
+    );
+  } catch (error) {
+    Logger.log(`月プルダウン更新エラー: ${error.message}`);
+    Utils.showAlert("エラー", `更新中にエラーが発生しました:\n${error.message}`);
   }
 }
 
@@ -874,6 +864,45 @@ const DataAccess = {
 
     return idMap;
   },
+
+  /**
+   * 店舗名称マスターデータを取得
+   * @return {Object} 略称をキー、正式名称を値とするマップ
+   */
+  getStoreNameMasterData() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.STORE_NAME_MASTER_SHEET_NAME);
+
+    if (!sheet) {
+      Logger.log("店舗名称マスターシートが見つかりません");
+      return {};
+    }
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < CONFIG.STORE_NAME_MASTER.DATA_START_ROW) {
+      Logger.log("店舗名称マスターにデータがありません");
+      return {};
+    }
+
+    const data = sheet.getRange(
+      CONFIG.STORE_NAME_MASTER.DATA_START_ROW,
+      CONFIG.STORE_NAME_MASTER.ABBREVIATED_NAME_COL,
+      lastRow - CONFIG.STORE_NAME_MASTER.DATA_START_ROW + 1,
+      2
+    ).getValues();
+
+    const nameMap = {};
+    for (let i = 0; i < data.length; i++) {
+      const abbreviated = data[i][0];
+      const official = data[i][1];
+      if (abbreviated && abbreviated.toString().trim() !== "") {
+        nameMap[abbreviated.toString().trim()] = official || "";
+      }
+    }
+
+    Logger.log(`店舗名称マスターから${Object.keys(nameMap).length}件のデータを取得しました`);
+    return nameMap;
+  },
 };
 
 // ========================================
@@ -1039,6 +1068,35 @@ const BusinessLogic = {
     return resourceMap;
   },
 
+  /**
+   * 店舗名称マスターから正式名称を取得
+   * @private
+   * @param {string} projectName 案件名
+   * @return {string|null} 正式名称（見つからない場合はnull）
+   */
+  _getOfficialStoreName(projectName) {
+    const storeNameMap = DataAccess.getStoreNameMasterData();
+
+    // 案件名から番号を除去したベース名
+    const baseName = Utils.extractBaseName(projectName);
+
+    // 完全一致を優先
+    if (storeNameMap[baseName]) {
+      Logger.log(`店舗名称マスター: ${baseName} → ${storeNameMap[baseName]}`);
+      return storeNameMap[baseName];
+    }
+
+    // 部分一致で検索
+    for (const abbreviated in storeNameMap) {
+      if (baseName.indexOf(abbreviated) !== -1 || abbreviated.indexOf(baseName) !== -1) {
+        Logger.log(`店舗名称マスター（部分一致）: ${baseName} → ${storeNameMap[abbreviated]}`);
+        return storeNameMap[abbreviated];
+      }
+    }
+
+    return null;
+  },
+
   _enrichShiftItem(item, resourceMap) {
     const resourceInfo = resourceMap[item.projectName];
 
@@ -1079,6 +1137,15 @@ const BusinessLogic = {
     }
 
     const content = this._determineContent(item.projectName, scheduleText, item.date);
+
+    // 内容が「店頭ヘルパー」または「軒先販売」の場合、店舗名称マスターを参照
+    if (content === CONFIG.DEFAULT_CONTENTS.TENTOU_HELPER ||
+        content === CONFIG.DEFAULT_CONTENTS.NOKISAKI) {
+      const officialName = this._getOfficialStoreName(item.projectName);
+      if (officialName) {
+        venue = officialName;
+      }
+    }
 
     return {
       date: item.date,
@@ -1925,17 +1992,22 @@ const MasterSheetManager = {
     // 個別案件設定シート作成
     this._createCustomProjectSheet(ss);
 
+    // 店舗名称マスターシート作成
+    this._createStoreNameMasterSheet(ss);
+
     Utils.showAlert(
       "初期設定完了",
       "以下のシートを作成しました：\n" +
       "✓ マスターシート\n" +
       "✓ ID管理シート\n" +
-      "✓ 個別案件設定シート\n\n" +
+      "✓ 個別案件設定シート\n" +
+      "✓ 店舗名称マスターシート\n\n" +
       "次の手順：\n" +
       "1. ID管理シートに固定メンバーを登録\n" +
       "2. マスターシートのG2にフォルダIDを入力\n" +
-      "3. カレンダーで年月を選択\n" +
-      "4. マスターシート更新を実行"
+      "3. マスターシートのG5で転記対象月を選択\n" +
+      "4. 店舗名称マスターに店舗情報を登録\n" +
+      "5. マスターシート更新を実行"
     );
 
     ss.setActiveSheet(masterSheet);
@@ -1965,8 +2037,17 @@ const MasterSheetManager = {
     sheet.getRange(CONFIG.MASTER_SETTINGS.FOLDER_ID_ROW, CONFIG.MASTER_SETTINGS.FOLDER_ID_COL)
       .setBackground(CONFIG.COLORS.FOLDER_ID_BG);
 
-    // カレンダーを作成
-    this._createCalendar(sheet);
+    // 月選択プルダウンラベル
+    sheet.getRange(
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_LABEL_ROW,
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_LABEL_COL
+    )
+      .setValue("転記対象月")
+      .setFontWeight("bold")
+      .setBackground(CONFIG.COLORS.FOLDER_ID_BG);
+
+    // プルダウン初期設定
+    this._setupMonthDropdown(sheet);
 
     // 列幅設定
     this._setColumnWidths(sheet);
@@ -1995,10 +2076,8 @@ const MasterSheetManager = {
     sheet.setColumnWidth(CONFIG.MASTER_COLUMNS.LAST_UPDATE, CONFIG.COLUMN_WIDTHS.MASTER_LAST_UPDATE);
     sheet.setColumnWidth(CONFIG.MASTER_COLUMNS.ERROR_MESSAGE, CONFIG.COLUMN_WIDTHS.MASTER_ERROR);
 
-    // カレンダー列の幅
-    for (let i = CONFIG.MASTER_SETTINGS.CALENDAR_START_COL; i <= CONFIG.MASTER_SETTINGS.CALENDAR_END_COL; i++) {
-      sheet.setColumnWidth(i, CONFIG.COLUMN_WIDTHS.CALENDAR);
-    }
+    // プルダウン列の幅
+    sheet.setColumnWidth(CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_COL, CONFIG.COLUMN_WIDTHS.MONTH_DROPDOWN);
   },
 
   /**
@@ -2007,12 +2086,12 @@ const MasterSheetManager = {
    * @param {Sheet} sheet マスターシート
    */
   _addUsageInstructions(sheet) {
-    const usageCol = CONFIG.MASTER_SETTINGS.CALENDAR_START_COL;
+    const usageCol = CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_COL;
     const usageStartRow = CONFIG.MASTER_SETTINGS.USAGE_START_ROW;
     const instructions = [
       "【使い方】",
       "1. G2にフォルダIDを入力",
-      "2. カレンダーで年月を選択",
+      "2. G5のプルダウンで転記対象月を選択",
       "3. A列のチェックで転記対象を選択",
       "4. メニューから「チェックした人を転記」を実行"
     ];
@@ -2024,86 +2103,43 @@ const MasterSheetManager = {
   },
 
   /**
-   * カレンダーを作成
+   * 月選択プルダウンを設定
    * @private
    * @param {Sheet} sheet マスターシート
    */
-  _createCalendar(sheet) {
-    const yearRow = CONFIG.MASTER_SETTINGS.CALENDAR_YEAR_ROW;
-    const startCol = CONFIG.MASTER_SETTINGS.CALENDAR_START_COL;
-    const endCol = CONFIG.MASTER_SETTINGS.CALENDAR_END_COL;
-    const monthStartRow = CONFIG.MASTER_SETTINGS.CALENDAR_MONTH_START_ROW;
+  _setupMonthDropdown(sheet) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth() + 1;
 
-    // 年のセルを結合してプルダウンを設定
-    const yearRange = sheet.getRange(yearRow, startCol, 1, endCol - startCol + 1);
-    yearRange.merge();
+    // 今月
+    const thisMonth = `${currentYear}年${currentMonth}月`;
 
-    const currentYear = new Date().getFullYear();
-
-    // プルダウンリストを「2024年」形式で作成
-    const yearList = [];
-    for (let y = CONFIG.YEAR_RANGE_START; y <= CONFIG.YEAR_RANGE_END; y++) {
-      yearList.push(`${y}年`);
+    // 来月
+    let nextYear = currentYear;
+    let nextMonth = currentMonth + 1;
+    if (nextMonth > 12) {
+      nextMonth = 1;
+      nextYear = currentYear + 1;
     }
+    const nextMonthStr = `${nextYear}年${nextMonth}月`;
 
-    const yearRule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(yearList, true)
+    // プルダウンを設定
+    const cell = sheet.getRange(
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_ROW,
+      CONFIG.MASTER_SETTINGS.MONTH_DROPDOWN_COL
+    );
+
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList([thisMonth, nextMonthStr], true)
+      .setAllowInvalid(false)
       .build();
 
-    yearRange.setDataValidation(yearRule)
-      .setValue(`${currentYear}年`)
-      .setFontWeight("bold")
-      .setHorizontalAlignment("center")
-      .setVerticalAlignment("middle")
-      .setBackground(CONFIG.COLORS.HEADER_BG);
+    cell.setDataValidation(rule);
+    cell.setValue(thisMonth);  // デフォルトで今月を選択
+    cell.setBackground(CONFIG.COLORS.FOLDER_ID_BG);
 
-    // 月のカレンダーを作成（3行 x 4列）
-    const monthData = [
-      [1, 2, 3, 4],
-      [5, 6, 7, 8],
-      [9, 10, 11, 12]
-    ];
-
-    sheet.getRange(monthStartRow, startCol, CONFIG.MASTER_SETTINGS.CALENDAR_ROWS, CONFIG.MASTER_SETTINGS.CALENDAR_COLS)
-      .setValues(monthData)
-      .setHorizontalAlignment("center")
-      .setVerticalAlignment("middle")
-      .setFontWeight("bold")
-      .setBorder(
-        true, true, true, true, true, true,
-        "#000000",
-        SpreadsheetApp.BorderStyle.SOLID
-      );
-
-    // 現在の月を選択状態にする
-    const currentMonth = new Date().getMonth() + 1;
-    this._selectMonth(sheet, currentMonth);
-  },
-
-  /**
-   * カレンダーで月を選択
-   * @private
-   * @param {Sheet} sheet マスターシート
-   * @param {number} month 月（1-12）
-   */
-  _selectMonth(sheet, month) {
-    const startCol = CONFIG.MASTER_SETTINGS.CALENDAR_START_COL;
-    const monthStartRow = CONFIG.MASTER_SETTINGS.CALENDAR_MONTH_START_ROW;
-
-    // 全ての月セルの背景色をクリア
-    sheet.getRange(
-      monthStartRow,
-      startCol,
-      CONFIG.MASTER_SETTINGS.CALENDAR_ROWS,
-      CONFIG.MASTER_SETTINGS.CALENDAR_COLS
-    ).setBackground(CONFIG.COLORS.WHITE);
-
-    // 選択された月のセルを青色にする
-    const row = Math.floor((month - 1) / CONFIG.MASTER_SETTINGS.CALENDAR_COLS);
-    const col = (month - 1) % CONFIG.MASTER_SETTINGS.CALENDAR_COLS;
-
-    sheet.getRange(monthStartRow + row, startCol + col)
-      .setBackground(CONFIG.MASTER_SETTINGS.CALENDAR_SELECTED_COLOR);
+    Logger.log(`月プルダウンを設定しました: ${thisMonth}, ${nextMonthStr}`);
   },
 
   _createIdManagementSheet(ss) {
@@ -2192,6 +2228,53 @@ const MasterSheetManager = {
     sheet.getRange(9, 1, 4, 1).setFontStyle("italic").setFontColor("#666666");
 
     Logger.log("個別案件設定シートを作成しました");
+  },
+
+  /**
+   * 店舗名称マスターシートを作成
+   * @private
+   * @param {Spreadsheet} ss スプレッドシート
+   */
+  _createStoreNameMasterSheet(ss) {
+    let sheet = ss.getSheetByName(CONFIG.STORE_NAME_MASTER_SHEET_NAME);
+
+    if (sheet) {
+      ss.deleteSheet(sheet);
+    }
+
+    sheet = ss.insertSheet(CONFIG.STORE_NAME_MASTER_SHEET_NAME);
+
+    // ヘッダー作成
+    const headers = ["略称", "正式名称", "備考"];
+    sheet.getRange(CONFIG.STORE_NAME_MASTER.HEADER_ROW, 1, 1, 3)
+      .setValues([headers])
+      .setFontWeight("bold")
+      .setBackground("#E8F0FE")
+      .setHorizontalAlignment("center");
+
+    // 列幅設定
+    sheet.setColumnWidth(1, 200);  // A列: 略称
+    sheet.setColumnWidth(2, 250);  // B列: 正式名称
+    sheet.setColumnWidth(3, 200);  // C列: 備考
+
+    // サンプルデータ
+    const sampleData = [
+      ["テラス湘南(店)", "DSテラスモール湘南店", ""],
+      ["カインズ行田", "DSカインズ行田店", ""],
+      ["イオン成田", "DSイオンモール成田店", ""],
+    ];
+    sheet.getRange(CONFIG.STORE_NAME_MASTER.DATA_START_ROW, 1, 3, 3).setValues(sampleData);
+
+    // 使い方をD列以降に記載
+    sheet.getRange(2, 4).setValue("【使い方】").setFontWeight("bold");
+    sheet.getRange(3, 4).setValue("1. 略称に元シフト表の案件名（番号なし）を入力").setFontStyle("italic");
+    sheet.getRange(4, 4).setValue("2. 正式名称に転記時に使用する店舗名を入力").setFontStyle("italic");
+    sheet.getRange(5, 4).setValue("3. 「店頭ヘルパー」と「軒先販売」の会場名に反映されます").setFontStyle("italic");
+    sheet.getRange(6, 4).setValue("4. 部分一致で検索されます（例: 「テラス湘南」で「テラス湘南①②③」全てに適用）").setFontStyle("italic");
+
+    sheet.setColumnWidth(4, 500);
+
+    Logger.log("店舗名称マスターシートを作成しました");
   },
 
   updateMasterSheet() {
