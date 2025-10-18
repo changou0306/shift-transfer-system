@@ -423,16 +423,15 @@ const DateUtils = {
     const monthMatch = dateRangeText.match(/(\d+)\//);
     if (!monthMatch) return [];
 
-    // 月部分を除去
-    const daysText = dateRangeText.slice(dateRangeText.indexOf('/') + 1);
+    // 月部分を除去（StringUtilsを使用）
+    const daysText = StringUtils.extractDaysFromDateRange(dateRangeText);
     if (!daysText) return [];
 
     // 重複を防ぐためSetを使用（O(1)の追加/検索）
     const dateSet = new Set();
 
-    // 複数の区切り文字で分割（カンマ、読点、ピリオド、中黒）
-    // 範囲記号（〜～-）は区切り文字に含めない
-    const parts = daysText.split(/[,、.・]/);
+    // 複数の区切り文字で分割（StringUtilsを使用）
+    const parts = StringUtils.splitByDateDelimiters(daysText);
 
     for (let i = 0; i < parts.length; i++) {
       const trimmed = parts[i].trim();
@@ -820,6 +819,69 @@ const StringUtils = {
   normalizeWhitespace(str) {
     if (!str) return "";
     return str.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+  },
+
+  /**
+   * 行頭の箇条書き記号を除去
+   *
+   * @param {string} str - 対象文字列
+   * @returns {string} 箇条書き記号を除去した文字列
+   *
+   * @example
+   * StringUtils.removeLeadingBullets("・イオンモール"); // "イオンモール"
+   * StringUtils.removeLeadingBullets("•ベイシア"); // "ベイシア"
+   */
+  removeLeadingBullets(str) {
+    if (!str) return "";
+    return str.replace(/^[・•]\s*/, '');
+  },
+
+  /**
+   * 日付範囲文字列から日付部分のみを抽出
+   *
+   * @param {string} dateRangeText - 日付範囲文字列（例: "11/1-3"）
+   * @returns {string} 日付部分（例: "1-3"）、月が含まれていない場合は空文字列
+   *
+   * @example
+   * StringUtils.extractDaysFromDateRange("11/1-3"); // "1-3"
+   * StringUtils.extractDaysFromDateRange("12/15,20"); // "15,20"
+   * StringUtils.extractDaysFromDateRange("invalid"); // ""
+   */
+  extractDaysFromDateRange(dateRangeText) {
+    if (!dateRangeText || typeof dateRangeText !== 'string') return "";
+    const slashIndex = dateRangeText.indexOf('/');
+    if (slashIndex === -1) return "";
+    return dateRangeText.slice(slashIndex + 1);
+  },
+
+  /**
+   * 日付区切り文字で文字列を分割
+   *
+   * @param {string} text - 対象文字列
+   * @returns {string[]} 分割された文字列配列
+   *
+   * @example
+   * StringUtils.splitByDateDelimiters("1,2,3"); // ["1", "2", "3"]
+   * StringUtils.splitByDateDelimiters("1、2.3・4"); // ["1", "2", "3", "4"]
+   */
+  splitByDateDelimiters(text) {
+    if (!text) return [];
+    return text.split(/[,、.・]/);
+  },
+
+  /**
+   * コロンで分割して最初の部分を取得
+   *
+   * @param {string} text - 対象文字列
+   * @returns {string} コロン前の文字列
+   *
+   * @example
+   * StringUtils.getBeforeColon("店頭ヘルパー：イオン"); // "店頭ヘルパー"
+   * StringUtils.getBeforeColon("ベイシア:11/1-3"); // "ベイシア"
+   */
+  getBeforeColon(text) {
+    if (!text) return "";
+    return text.split(/[：:]/)[0];
   }
 };
 
@@ -1240,6 +1302,12 @@ const SettingsManager = {
 // ========================================
 // メニュー作成
 // ========================================
+/**
+ * スプレッドシート起動時にメニューを追加
+ *
+ * @function onOpen
+ * @returns {void}
+ */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu("📋 シフト転記システム")
@@ -1262,6 +1330,9 @@ function onOpen() {
 
 /**
  * 月プルダウンを更新（メニューから呼び出し）
+ *
+ * @function updateMonthDropdown
+ * @returns {void}
  */
 function updateMonthDropdown() {
   try {
@@ -1291,6 +1362,9 @@ function updateMonthDropdown() {
 
 /**
  * デバッグモードを切り替え
+ *
+ * @function toggleDebugMode
+ * @returns {void}
  */
 function toggleDebugMode() {
   try {
@@ -1314,6 +1388,9 @@ function toggleDebugMode() {
 
 /**
  * 詳細ログモードを切り替え
+ *
+ * @function toggleVerboseLogging
+ * @returns {void}
  */
 function toggleVerboseLogging() {
   try {
@@ -1337,6 +1414,9 @@ function toggleVerboseLogging() {
 
 /**
  * すべての設定を表示
+ *
+ * @function showAllSettings
+ * @returns {void}
  */
 function showAllSettings() {
   try {
@@ -1372,6 +1452,9 @@ function showAllSettings() {
 
 /**
  * すべての設定をリセット
+ *
+ * @function resetAllSettings
+ * @returns {void}
  */
 function resetAllSettings() {
   try {
@@ -1418,6 +1501,9 @@ function resetAllSettings() {
 
 /**
  * エラーレポートを表示
+ *
+ * @function showErrorReport
+ * @returns {void}
  */
 function showErrorReport() {
   try {
@@ -1463,6 +1549,9 @@ function showErrorReport() {
 
 /**
  * エラーログをクリア
+ *
+ * @function clearErrorLog
+ * @returns {void}
  */
 function clearErrorLog() {
   try {
@@ -2085,13 +2174,9 @@ const BusinessLogic = {
     nameFirst: /^([ぁ-んァ-ヶ一-龠々〆〤ヵヶa-zA-Z()（）\d]+[^：:]*?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/,
     dateFirst: /^(\d{1,2})\/([^：:\n]+?)\s*[：:]\s*([^：:\n]+?)(?:\s*[：:]|\s*\d+名|\n|$)/,
 
-    // 行頭の装飾文字除去
-    leadingBullet: /^[・•]\s*/,
-
-    // その他の頻出パターン
+    // その他の頻出パターン（_OLD版メソッドで使用）
     monthExtract: /(\d+)\//,
     colonSplit: /[：:]/,
-    numberSuffix: /[①②③④⑤⑥⑦⑧⑨⑩]+$/g,
   },
 
   /**
@@ -2343,9 +2428,8 @@ const BusinessLogic = {
   },
 
   _getProjectBaseName(projectName) {
-    if (!projectName) return "";
-    // キャッシュされた正規表現パターンを使用
-    return projectName.replace(this._patterns.numberSuffix, "").trim();
+    // StringUtilsのextractBaseNameを使用
+    return StringUtils.extractBaseName(projectName);
   },
 
   /**
@@ -2390,7 +2474,7 @@ const BusinessLogic = {
     }
 
     // 正規表現パターン（事前コンパイル済みキャッシュを使用）
-    const { nameFirst, dateFirst, leadingBullet, colonSplit } = this._patterns;
+    const { nameFirst, dateFirst } = this._patterns;
 
     // 改行で分割
     const lines = scheduleText.split(/\n/);
@@ -2399,8 +2483,8 @@ const BusinessLogic = {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // 行頭の・や•を削除（キャッシュされたパターン使用）
-      const cleanedLine = trimmed.replace(leadingBullet, '');
+      // 行頭の・や•を削除（StringUtilsを使用）
+      const cleanedLine = StringUtils.removeLeadingBullets(trimmed);
 
       if (isVerbose) {
         Logger.log(`\n--- [${logPrefix}] 処理中の行 ---`);
@@ -2427,7 +2511,7 @@ const BusinessLogic = {
           continue;
         }
 
-        const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
+        const fullDateRange = StringUtils.getBeforeColon(`${month}/${dateRange}`);
         if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
         const dates = this._expandDatesFromRange(fullDateRange);
@@ -2467,17 +2551,13 @@ const BusinessLogic = {
         // クリーニング処理（タイプによって異なる）
         let cleanedName;
         if (extractType === 'venue') {
-          cleanedName = rawName
-            .replace(/[：:].*$/, '')
-            .replace(/＋[^：:（）()]*$/, '')
-            .replace(/\s*\d+名.*$/, '')
-            .trim();
+          cleanedName = StringUtils.cleanVenueText(rawName);
         } else {
-          cleanedName = this._cleanContentText(rawName);
+          cleanedName = StringUtils.cleanContentText(rawName);
         }
 
         if (cleanedName && cleanedName.length > 0) {
-          const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
+          const fullDateRange = StringUtils.getBeforeColon(`${month}/${dateRange}`);
           if (isVerbose) Logger.log(`  処理する日付範囲: "${fullDateRange}"`);
 
           const dates = this._expandDatesFromRange(fullDateRange);
@@ -2613,7 +2693,7 @@ const BusinessLogic = {
         const dateRange = dateMatch[2];
         const content = dateMatch[3].trim();
 
-        const cleanContent = this._cleanContentText(content);
+        const cleanContent = StringUtils.cleanContentText(content);
 
         if (cleanContent && cleanContent.length > 0) {
           const fullDateRange = `${month}/${dateRange}`.split(colonSplit)[0];
@@ -2666,7 +2746,7 @@ const BusinessLogic = {
         const dateRange = match[1];
         const content = match[2].trim();
 
-        const cleanContent = this._cleanContentText(content);
+        const cleanContent = StringUtils.cleanContentText(content);
 
         if (cleanContent && cleanContent.length > 0) {
           patterns.push({
@@ -2685,7 +2765,7 @@ const BusinessLogic = {
           const content = match[1].trim();
           const dateRange = match[2];
 
-          const cleanContent = this._cleanContentText(content);
+          const cleanContent = StringUtils.cleanContentText(content);
 
           if (cleanContent && cleanContent.length > 0) {
             patterns.push({
@@ -2704,7 +2784,7 @@ const BusinessLogic = {
           const dateText = match[1].trim();
           if (!/\//.test(dateText) && /[\d]/.test(dateText)) {
             const content = match[2].trim();
-            const cleanContent = this._cleanContentText(content);
+            const cleanContent = StringUtils.cleanContentText(content);
 
             if (cleanContent && cleanContent.length > 0) {
               patterns.push({
@@ -2720,16 +2800,6 @@ const BusinessLogic = {
     }
 
     return patterns;
-  },
-
-  /**
-   * 内容テキストから余計な情報を除去
-   * @private
-   * @param {string} contentText 内容テキスト
-   * @return {string} クリーンな内容テキスト
-   */
-  _cleanContentText(contentText) {
-    return StringUtils.cleanContentText(contentText);
   },
 
   /**
@@ -4976,6 +5046,9 @@ const ShiftTransferController = {
 
 /**
  * チェックされたメンバーを転記（メニューから呼び出し）
+ *
+ * @function transferCheckedMembers
+ * @returns {void}
  */
 function transferCheckedMembers() {
   try {
@@ -5004,9 +5077,11 @@ function transferCheckedMembers() {
 
 /**
  * 転記確認ダイアログを表示
+ *
  * @private
- * @param {Array<string>} members メンバー名の配列
- * @return {boolean} OKの場合true
+ * @function _showTransferConfirmation
+ * @param {Array<string>} members - メンバー名の配列
+ * @returns {boolean} OKの場合true
  */
 function _showTransferConfirmation(members) {
   const ui = SpreadsheetApp.getUi();
@@ -5032,8 +5107,11 @@ function _showTransferConfirmation(members) {
 
 /**
  * 転記結果を表示
+ *
  * @private
- * @param {Array} results 転記結果の配列
+ * @function _showTransferResults
+ * @param {Array<{name: string, success: boolean, error?: string}>} results - 転記結果の配列
+ * @returns {void}
  */
 function _showTransferResults(results) {
   let successCount = 0;
@@ -5064,6 +5142,9 @@ function _showTransferResults(results) {
 
 /**
  * マスターシート更新（メニューから呼び出し）
+ *
+ * @function updateMasterSheet
+ * @returns {void}
  */
 function updateMasterSheet() {
   MasterSheetManager.updateMasterSheet();
@@ -5071,6 +5152,9 @@ function updateMasterSheet() {
 
 /**
  * マスター初期設定（メニューから呼び出し）
+ *
+ * @function initializeMasterSheet
+ * @returns {void}
  */
 function initializeMasterSheet() {
   MasterSheetManager.initializeMasterSheet();
