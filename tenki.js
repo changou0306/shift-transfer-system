@@ -1182,20 +1182,43 @@ const BusinessLogic = {
 
     const contents = [];
 
-    // 改行でも分割できるように拡張
+    // 改行で分割
     const lines = scheduleText.split(/\n/);
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
+      // ★重要：月で分割する前に、内容名：日付のパターンをチェック
+      // パターンA: 内容名：月/日付範囲（例：店頭ヘルパー：11/1〜3）
+      const contentFirstPattern = /^([^：:\d]+?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      const contentMatch = trimmed.match(contentFirstPattern);
+
+      if (contentMatch) {
+        const contentName = contentMatch[1].trim();
+        const month = parseInt(contentMatch[2]);
+        const dateRange = contentMatch[3].trim();
+
+        // 日付範囲を展開
+        const dates = this._expandDatesFromRange(`${month}/${dateRange}`);
+
+        if (dates.indexOf(targetDate) !== -1) {
+          contents.push(contentName);
+        }
+
+        // このlineの処理は完了（次のlineへ）
+        continue;
+      }
+
+      // パターンAでマッチしなかった場合は、既存のロジックで処理
+      // 月ごとに分割
       const mainSegments = trimmed.split(/(?=\d+\/)/);
 
       for (const segment of mainSegments) {
         const seg = segment.trim();
         if (!seg) continue;
 
-        // 月を抽出（2つの方法で試みる）
+        // 月を抽出
         let month = null;
 
         let monthMatch = seg.match(/^(\d+)\//);
@@ -1390,30 +1413,49 @@ const BusinessLogic = {
 
     const venues = [];
 
-    // 改行でも分割できるように拡張
+    // 改行で分割
     const lines = scheduleText.split(/\n/);
 
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      // さらに月ごとに分割
+      // ★重要：月で分割する前に、会場名：日付のパターンをチェック
+      // パターンA: 会場名：月/日付範囲（例：ベイシア香取小見川：11/1〜3）
+      const venueFirstPattern = /^([^：:\d]+?)\s*[：:]\s*(\d+)\/([^：:\n]+?)(?:\s*[：:]|$)/;
+      const venueMatch = trimmed.match(venueFirstPattern);
+
+      if (venueMatch) {
+        const venueName = venueMatch[1].trim();
+        const month = parseInt(venueMatch[2]);
+        const dateRange = venueMatch[3].trim();
+
+        // 日付範囲を展開
+        const dates = this._expandDatesFromRange(`${month}/${dateRange}`);
+
+        if (dates.indexOf(targetDate) !== -1) {
+          venues.push(venueName);
+        }
+
+        // このlineの処理は完了（次のlineへ）
+        continue;
+      }
+
+      // パターンAでマッチしなかった場合は、既存のロジックで処理
+      // 月ごとに分割
       const mainSegments = trimmed.split(/(?=\d+\/)/);
 
       for (const segment of mainSegments) {
         const seg = segment.trim();
         if (!seg) continue;
 
-        // 月を抽出（2つの方法で試みる）
+        // 月を抽出
         let month = null;
-
-        // 方法1: セグメントの先頭から（既存ロジック）
         let monthMatch = seg.match(/^(\d+)\//);
         if (monthMatch) {
           month = parseInt(monthMatch[1]);
         }
 
-        // 方法2: セグメント内のどこかから（新規ロジック）
         if (!month) {
           monthMatch = seg.match(/(\d+)\//);
           if (monthMatch) {
