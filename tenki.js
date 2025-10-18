@@ -197,7 +197,15 @@ const SettingsManager = {
       };
     }
 
-    // "2025年10月" の形式から抽出
+    // Dateオブジェクトの場合の処理を追加
+    if (value instanceof Date) {
+      return {
+        year: value.getFullYear(),
+        month: value.getMonth() + 1
+      };
+    }
+
+    // 文字列の場合の処理
     const match = String(value).match(/(\d{4})年(\d{1,2})月/);
 
     if (match) {
@@ -207,7 +215,7 @@ const SettingsManager = {
       };
     }
 
-    // パースできない場合はデフォルト
+    // デフォルト
     const today = new Date();
     return {
       year: today.getFullYear(),
@@ -2136,6 +2144,10 @@ const MasterSheetManager = {
       .build();
 
     cell.setDataValidation(rule);
+
+    // 重要: 文字列フォーマットを設定（この行を追加）
+    cell.setNumberFormat('@STRING@');
+
     cell.setValue(thisMonth);  // デフォルトで今月を選択
     cell.setBackground(CONFIG.COLORS.FOLDER_ID_BG);
 
