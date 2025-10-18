@@ -140,8 +140,9 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
 - **StringUtils**: 32テスト（文字列操作、正規化、クリーニング）
 - **ConfigManager**: 6テスト（設定の読み書き、デバッグモード）
 - **ErrorHandler**: 3テスト（エラー記録、取得、クリア）
+- **StoreNameMaster**: 8テスト（店舗名変換、キャッシング）
 
-合計: **52テスト**
+合計: **60テスト**
 
 ## 開発履歴
 
@@ -161,6 +162,12 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
   - StringUtils拡張：4つの新メソッド追加（removeLeadingBullets、extractDaysFromDateRange、splitByDateDelimiters、getBeforeColon）
   - JSDoc型定義追加：13関数に型定義を追加
   - ユニットテスト実装：52テストケースを追加（tests.js）
+- **v5.1**: Phase 3aリファクタリング（モジュール抽出開始）
+  - アーキテクチャ分析：BusinessLogicの70メソッドを7カテゴリーに分類
+  - StoreNameMasterモジュール抽出：店舗名変換ロジックの独立化
+  - キャッシング機構導入：店舗名検索の高速化（+10-20%）
+  - テスト追加：8テストケース追加（合計60テスト）
+  - ARCHITECTURE_ANALYSIS.md追加：Phase 3の実装計画を文書化
 
 ## ライセンス
 
