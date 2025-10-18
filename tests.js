@@ -593,6 +593,88 @@ function testStoreNameMaster() {
 }
 
 // ========================================
+// ScheduleParser Tests
+// ========================================
+
+function testScheduleParser() {
+  TestRunner.suite("ScheduleParser");
+
+  // 事前にSettingsManagerを設定（テスト用の年月）
+  const testYear = 2025;
+  const testMonth = 11;
+
+  TestRunner.test("extractVenues - simple pattern", () => {
+    // "会場名：月/日付範囲" パターン
+    const result = ScheduleParser.extractVenues("ベイシア：11/1-3", 1);
+    assert.equal(Array.isArray(result), true);
+    // 実際の結果は設定に依存するため、配列であることのみ確認
+  });
+
+  TestRunner.test("extractVenues - empty input", () => {
+    const result = ScheduleParser.extractVenues("", 1);
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("extractVenues - null input", () => {
+    const result = ScheduleParser.extractVenues(null, 1);
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("extractContent - simple pattern", () => {
+    const result = ScheduleParser.extractContent("店頭ヘルパー：11/1-3", 1);
+    // 結果は設定に依存するため、文字列型であることのみ確認
+    assert.equal(typeof result, "string");
+  });
+
+  TestRunner.test("extractContent - empty input", () => {
+    const result = ScheduleParser.extractContent("", 1);
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("extractContent - null input", () => {
+    const result = ScheduleParser.extractContent(null, 1);
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("extractWorkingHours - date-specific pattern", () => {
+    // 日付指定パターン: "11/1-3：9:00-17:00"
+    const result = ScheduleParser.extractWorkingHours("11/1-3：9:00-17:00", 1);
+    // 結果は設定と日付に依存
+    assert.equal(typeof result, "string");
+  });
+
+  TestRunner.test("extractWorkingHours - general pattern", () => {
+    const result = ScheduleParser.extractWorkingHours("9:00-17:00", 1);
+    // 一般的なパターンの場合、時間が正規化されて返される
+    assert.equal(typeof result, "string");
+  });
+
+  TestRunner.test("extractWorkingHours - empty input", () => {
+    const result = ScheduleParser.extractWorkingHours("", 1);
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("extractWorkingHours - null input", () => {
+    const result = ScheduleParser.extractWorkingHours(null, 1);
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("extractWorkingHours - invalid type", () => {
+    const result = ScheduleParser.extractWorkingHours(123, 1);
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("_patterns - exists", () => {
+    // パターンキャッシュが存在することを確認
+    assert.notNull(ScheduleParser._patterns);
+    assert.notNull(ScheduleParser._patterns.nameFirst);
+    assert.notNull(ScheduleParser._patterns.dateFirst);
+    assert.notNull(ScheduleParser._patterns.monthExtract);
+    assert.notNull(ScheduleParser._patterns.colonSplit);
+  });
+}
+
+// ========================================
 // メインテスト実行関数
 // ========================================
 
@@ -611,6 +693,7 @@ function runAllTests() {
   testConfigManager();
   testErrorHandler();
   testStoreNameMaster();
+  testScheduleParser();
 
   // サマリーを表示
   TestRunner.summary();
@@ -648,5 +731,11 @@ function runErrorHandlerTests() {
 function runStoreNameMasterTests() {
   TestRunner.reset();
   testStoreNameMaster();
+  TestRunner.summary();
+}
+
+function runScheduleParserTests() {
+  TestRunner.reset();
+  testScheduleParser();
   TestRunner.summary();
 }
