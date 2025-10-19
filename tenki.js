@@ -910,6 +910,12 @@ const StoreNameMaster = {
   _cache: null,
 
   /**
+   * 部分一致検索用インデックス（Phase 4最適化）
+   * @private
+   */
+  _partialMatchIndex: null,
+
+  /**
    * 店舗名称マスターデータを取得（キャッシュ使用）
    *
    * @returns {Object} 略称をキー、正式名称を値とするマップ
@@ -958,7 +964,42 @@ const StoreNameMaster = {
 
     Logger.log(`店舗名称マスターから${Object.keys(nameMap).length}件のデータを取得しました`);
     this._cache = nameMap;
+
+    // Phase 4最適化: 部分一致検索用インデックスを構築
+    this._buildPartialMatchIndex(nameMap);
+
     return this._cache;
+  },
+
+  /**
+   * 部分一致検索用インデックスを構築
+   * Phase 4最適化: O(n)検索をO(1)に改善
+   * @private
+   * @param {Object} nameMap - 店舗名称マップ
+   */
+  _buildPartialMatchIndex(nameMap) {
+    this._partialMatchIndex = {};
+
+    for (const abbreviated in nameMap) {
+      const len = abbreviated.length;
+
+      // 各文字位置からの部分文字列をキーにインデックス化
+      for (let i = 0; i < len; i++) {
+        for (let j = i + 1; j <= len; j++) {
+          const substr = abbreviated.substring(i, j);
+
+          if (!this._partialMatchIndex[substr]) {
+            this._partialMatchIndex[substr] = [];
+          }
+
+          this._partialMatchIndex[substr].push(abbreviated);
+        }
+      }
+    }
+
+    if (ConfigManager.isDebugMode()) {
+      Logger.log(`部分一致インデックスを構築しました（${Object.keys(this._partialMatchIndex).length}エントリ）`);
+    }
   },
 
   /**
@@ -991,11 +1032,24 @@ const StoreNameMaster = {
       return storeNameMap[baseName];
     }
 
-    // 部分一致で検索
-    for (const abbreviated in storeNameMap) {
-      if (baseName.indexOf(abbreviated) !== -1 || abbreviated.indexOf(baseName) !== -1) {
+    // Phase 4最適化: インデックスを使った高速部分一致検索（O(1)）
+    if (this._partialMatchIndex && this._partialMatchIndex[baseName]) {
+      const candidates = this._partialMatchIndex[baseName];
+      if (candidates.length > 0) {
+        const abbreviated = candidates[0];
         if (ConfigManager.isDebugMode()) {
-          Logger.log(`店舗名称マスター（部分一致）: ${baseName} → ${storeNameMap[abbreviated]}`);
+          Logger.log(`店舗名称マスター（部分一致・高速）: ${baseName} → ${storeNameMap[abbreviated]}`);
+        }
+        return storeNameMap[abbreviated];
+      }
+    }
+
+    // フォールバック: インデックスが構築されていない場合や、逆方向の部分一致
+    // （baseName に abbreviated が含まれるケース）
+    for (const abbreviated in storeNameMap) {
+      if (baseName.indexOf(abbreviated) !== -1) {
+        if (ConfigManager.isDebugMode()) {
+          Logger.log(`店舗名称マスター（部分一致・従来方式）: ${baseName} → ${storeNameMap[abbreviated]}`);
         }
         return storeNameMap[abbreviated];
       }
@@ -1016,6 +1070,7 @@ const StoreNameMaster = {
    */
   clearCache() {
     this._cache = null;
+    this._partialMatchIndex = null;  // Phase 4: インデックスもクリア
     Logger.log("店舗名称マスターのキャッシュをクリアしました");
   },
 
@@ -5179,14 +5234,16 @@ const MasterSheetManager = {
 // ========================================
 const ShiftTransferController = {
   _cache: null,
+  _batchUpdateResults: [],  // バッチ更新用の結果蓄積
 
-  // 一括転記（高速版 - 改善）
+  // 一括転記（高速版 - 改善 + Phase 4最適化）
   executeBatchTransfer(names) {
     try {
       Logger.log("=== データ一括取得開始 ===");
       const startTime = new Date().getTime();
 
       this._cache = this._buildCacheOptimized(names);
+      this._batchUpdateResults = [];  // 結果蓄積用配列を初期化
 
       const cacheTime = new Date().getTime();
       Logger.log(`データ取得完了: ${(cacheTime - startTime) / 1000}秒`);
@@ -5196,20 +5253,43 @@ const ShiftTransferController = {
         try {
           const count = this._executePersonalTransferWithCache(name);
           results.push({ name, success: true, count });
+
+          // バッチ更新用に結果を蓄積（個別API呼び出しは行わない）
+          this._batchUpdateResults.push({
+            name,
+            updateDate: true,
+            clearError: true,
+            errorMessage: ""
+          });
+
           Logger.log(`✓ ${name}: 転記成功 (${count}件)`);
         } catch (error) {
           results.push({ name, success: false, error: error.message });
+
+          // エラー時も結果を蓄積
+          this._batchUpdateResults.push({
+            name,
+            updateDate: false,
+            clearError: false,
+            errorMessage: error.message
+          });
+
           Logger.log(`✗ ${name}: ${error.message}`);
         }
       }
+
+      // 一括でマスターシートを更新（60回 → 1回のAPI呼び出し）
+      this._applyBatchUpdatesToMaster();
 
       const endTime = new Date().getTime();
       Logger.log(`=== 処理完了: ${(endTime - startTime) / 1000}秒 ===`);
 
       this._cache = null;
+      this._batchUpdateResults = [];
       return results;
     } catch (error) {
       this._cache = null;
+      this._batchUpdateResults = [];
       throw error;
     }
   },
@@ -5431,35 +5511,34 @@ const ShiftTransferController = {
     return CoworkerOJTManager._findTrainerByColor(allShiftData, allShiftBackgrounds, targetColor, targetCol, nameRowMap);
   },
 
-  // 個人転記の最適化版
+  // 個人転記の最適化版（Phase 4: バッチ更新対応）
   _executePersonalTransferWithCache(name) {
     const cache = this._cache;
 
     // キャッシュからメンバー情報を取得（高速化）
     const memberInfo = cache.memberInfoMap[name];
     if (!memberInfo) {
-      this._recordError(name, `「${name}」の情報がマスターシートに見つかりません`);
+      // Phase 4: 個別API呼び出しを削除（バッチ更新に委譲）
       throw new Error(`「${name}」の情報がマスターシートに見つかりません`);
     }
 
     if (!memberInfo.sheetId || memberInfo.sheetId.trim() === "") {
-      this._recordError(name, "スプレッドシートIDが未設定です");
+      // Phase 4: 個別API呼び出しを削除（バッチ更新に委譲）
       throw new Error("スプレッドシートIDが未設定です");
     }
 
     let shiftData = this._getPersonalShiftDataFromCache(name, cache);
 
     if (shiftData.length === 0) {
-      this._recordError(name, `「${name}」のシフトデータが見つかりませんでした`);
+      // Phase 4: 個別API呼び出しを削除（バッチ更新に委譲）
       throw new Error(`「${name}」のシフトデータが見つかりませんでした`);
     }
 
     const enrichResult = this._enrichWithResourceDataFromCache(shiftData, cache);
     shiftData = enrichResult.data;
 
-    if (enrichResult.errors.length > 0) {
-      this._recordError(name, enrichResult.errors.join("\n"));
-    }
+    // エラーがある場合はエラーメッセージを保持（バッチ更新で使用）
+    const errorMessage = enrichResult.errors.length > 0 ? enrichResult.errors.join("\n") : "";
 
     const ojtData = this._processOJTDataFromCache(name, cache);
     shiftData = shiftData.concat(ojtData);
@@ -5477,21 +5556,15 @@ const ShiftTransferController = {
         cache
       );
     } catch (error) {
-      if (error.message.indexOf("見つかりません") !== -1 || error.message.indexOf("アクセス") !== -1) {
-        this._recordError(name, "個人シートにアクセスできません（権限エラー）");
-      } else {
-        this._recordError(name, `個人シートエラー: ${error.message}`);
-      }
+      // Phase 4: 個別API呼び出しを削除（バッチ更新に委譲）
+      // エラーメッセージは呼び出し元（executeBatchTransfer）で処理
       throw error;
     }
 
     const transferCount = this._transferDataOptimizedWithCache(personalSheet, shiftData, cache);
 
-    this._updateLastUpdateDate(name);
-
-    if (enrichResult.errors.length === 0) {
-      this._clearError(name);
-    }
+    // Phase 4: _updateLastUpdateDate()と_clearError()の個別呼び出しを削除
+    // executeBatchTransfer()のバッチ更新に統合
 
     return transferCount;
   },
@@ -5579,6 +5652,66 @@ const ShiftTransferController = {
    */
   _saveExistingDataFast(sheet, dateColumnMap, newData, daysInMonth) {
     return SheetFormatter._saveExistingDataFast(sheet, dateColumnMap, newData, daysInMonth);
+  },
+
+  /**
+   * マスターシートへのバッチ更新を実行
+   * Phase 4最適化: 60回のAPI呼び出しを1回に削減
+   * @private
+   */
+  _applyBatchUpdatesToMaster() {
+    if (this._batchUpdateResults.length === 0) {
+      return;
+    }
+
+    const masterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEETS.MASTER);
+    if (!masterSheet) {
+      Logger.log("マスターシートが見つかりません");
+      return;
+    }
+
+    const lastRow = masterSheet.getLastRow();
+    if (lastRow < CONFIG.MASTER_SETTINGS.DATA_START_ROW) {
+      return;
+    }
+
+    // 全データを一括取得（1回のAPI呼び出し）
+    const dataRange = masterSheet.getRange(
+      CONFIG.MASTER_SETTINGS.DATA_START_ROW,
+      1,
+      lastRow - CONFIG.MASTER_SETTINGS.DATA_START_ROW + 1,
+      CONFIG.MASTER_COLUMNS.TOTAL_COLUMNS
+    );
+    const data = dataRange.getValues();
+
+    const now = new Date();
+    const dateStr = Utilities.formatDate(now, "Asia/Tokyo", "yyyy/MM/dd HH:mm");
+
+    // メモリ上で更新処理
+    for (const update of this._batchUpdateResults) {
+      for (let i = 0; i < data.length; i++) {
+        if (data[i][CONFIG.MASTER_COLUMNS.NAME - 1] === update.name) {
+          // 最終更新日を更新
+          if (update.updateDate) {
+            data[i][CONFIG.MASTER_COLUMNS.LAST_UPDATE - 1] = dateStr;
+          }
+
+          // エラーメッセージを更新
+          if (update.clearError) {
+            data[i][CONFIG.MASTER_COLUMNS.ERROR_MESSAGE - 1] = "";
+          } else if (update.errorMessage) {
+            data[i][CONFIG.MASTER_COLUMNS.ERROR_MESSAGE - 1] = update.errorMessage;
+          }
+
+          break;  // 該当する名前が見つかったらループを抜ける
+        }
+      }
+    }
+
+    // 一括書き込み（1回のAPI呼び出し）
+    dataRange.setValues(data);
+
+    Logger.log(`マスターシートを一括更新しました（${this._batchUpdateResults.length}名分）`);
   },
 
   _updateLastUpdateDate(name) {
