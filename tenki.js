@@ -5251,18 +5251,21 @@ const ShiftTransferController = {
       const results = [];
       for (const name of names) {
         try {
-          const count = this._executePersonalTransferWithCache(name);
-          results.push({ name, success: true, count });
+          const result = this._executePersonalTransferWithCache(name);
+          const errorMessage = result.errors.length > 0 ? result.errors.join("\n") : "";
 
-          // バッチ更新用に結果を蓄積（個別API呼び出しは行わない）
+          results.push({ name, success: true, count: result.count });
+
+          // バッチ更新用に結果を蓄積
           this._batchUpdateResults.push({
             name,
             updateDate: true,
-            clearError: true,
-            errorMessage: ""
+            clearError: errorMessage === "",
+            errorMessage: errorMessage
           });
 
-          Logger.log(`✓ ${name}: 転記成功 (${count}件)`);
+          const errorLog = errorMessage ? ` - エラー: ${errorMessage}` : '';
+          Logger.log(`✓ ${name}: 転記成功 (${result.count}件)${errorLog}`);
         } catch (error) {
           results.push({ name, success: false, error: error.message });
 
@@ -5537,8 +5540,8 @@ const ShiftTransferController = {
     const enrichResult = this._enrichWithResourceDataFromCache(shiftData, cache);
     shiftData = enrichResult.data;
 
-    // エラーがある場合はエラーメッセージを保持（バッチ更新で使用）
-    const errorMessage = enrichResult.errors.length > 0 ? enrichResult.errors.join("\n") : "";
+    // エラーメッセージを保持（バッチ更新で使用）
+    const errorMessages = enrichResult.errors;
 
     const ojtData = this._processOJTDataFromCache(name, cache);
     shiftData = shiftData.concat(ojtData);
@@ -5566,7 +5569,11 @@ const ShiftTransferController = {
     // Phase 4: _updateLastUpdateDate()と_clearError()の個別呼び出しを削除
     // executeBatchTransfer()のバッチ更新に統合
 
-    return transferCount;
+    // 転記件数とエラーメッセージを返す
+    return {
+      count: transferCount,
+      errors: errorMessages
+    };
   },
 
   // その他のヘルパーメソッドは既存コードと同じ
