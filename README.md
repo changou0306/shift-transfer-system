@@ -142,8 +142,9 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
 - **ErrorHandler**: 3テスト（エラー記録、取得、クリア）
 - **StoreNameMaster**: 8テスト（店舗名変換、キャッシング）
 - **ScheduleParser**: 12テスト（スケジュール解析、稼働時間抽出）
+- **CoworkerOJTManager**: 15テスト（同僚情報、OJT訓練生、トレーナー検索）
 
-合計: **72テスト**
+合計: **87テスト**
 
 ## 開発履歴
 
@@ -175,6 +176,12 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
   - 稼働時間抽出の3段階優先順位実装：日付指定 > 条件付き > 一般パターン
   - BusinessLogicの3メソッドを委譲化（@deprecated追加）
   - テスト追加：12テストケース追加（合計72テスト）
+- **v5.3**: Phase 3cリファクタリング（同僚・OJT管理モジュール）
+  - CoworkerOJTManagerモジュール抽出：同僚・OJT情報管理の独立化（420行）
+  - 4つの公開メソッド実装：addCoworkersInfo、addOJTTraineesInfo、buildAllOJTData、processOJTData
+  - キャッシュ対応の統合実装：通常版とキャッシュ版を単一インターフェースに統合
+  - BusinessLogicとShiftTransferControllerの8メソッドを委譲化（@deprecated追加）
+  - テスト追加：15テストケース追加（合計87テスト、+20.8%）
 
 ## ライセンス
 

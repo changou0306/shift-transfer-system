@@ -1311,6 +1311,426 @@ const ScheduleParser = {
 };
 
 // ========================================
+// 同僚・OJT管理モジュール
+// ========================================
+/**
+ * CoworkerOJTManager - 同僚情報とOJT訓練生情報の管理
+ *
+ * 【責務】
+ * - 同時入店スタッフ（同僚）の抽出と付与
+ * - OJT訓練生の情報処理とトレーナーとの紐付け
+ * - トレーナー検索とOJTデータ構築
+ *
+ * 【主要メソッド】
+ * - addCoworkersInfo: シフトデータに同僚情報を追加
+ * - addOJTTraineesInfo: トレーナーのシフトにOJT訓練生情報を追加
+ * - buildAllOJTData: OJTデータの一括構築
+ * - processOJTData: OJTデータの処理と変換
+ */
+const CoworkerOJTManager = {
+  /**
+   * シフトデータに同僚情報を追加
+   * @param {Array} shiftData - シフトデータ配列
+   * @param {string} selectedName - 選択された名前
+   * @param {Object|null} cache - キャッシュデータ（オプション）
+   * @returns {Array} 同僚情報が追加されたシフトデータ
+   */
+  addCoworkersInfo(shiftData, selectedName, cache = null) {
+    if (cache) {
+      return this._addCoworkersInfoFromCache(shiftData, selectedName, cache);
+    }
+
+    const nicknameMap = DataAccess.getNicknameMap();
+    const targetNickname = nicknameMap[selectedName];
+
+    if (!targetNickname) {
+      Logger.log(`${selectedName}の略称が見つかりません`);
+      return shiftData;
+    }
+
+    const storeSheet = DataAccess.getStoreSheet();
+    if (!storeSheet) {
+      Logger.log("店舗別シートが見つかりません");
+      return shiftData;
+    }
+
+    const lastRow = storeSheet.getLastRow();
+    const lastCol = storeSheet.getLastColumn();
+
+    const storeNames = storeSheet.getRange(
+      CONFIG.STORE_CONFIG.DATA_START_ROW,
+      CONFIG.STORE_CONFIG.NAME_COL,
+      lastRow - CONFIG.STORE_CONFIG.DATA_START_ROW + 1,
+      1
+    ).getValues();
+
+    const dateHeaders = storeSheet.getRange(
+      CONFIG.STORE_CONFIG.DATE_ROW,
+      CONFIG.STORE_CONFIG.DATA_START_COL,
+      1,
+      lastCol - CONFIG.STORE_CONFIG.DATA_START_COL + 1
+    ).getValues()[0];
+
+    const staffData = storeSheet.getRange(
+      CONFIG.STORE_CONFIG.DATA_START_ROW,
+      CONFIG.STORE_CONFIG.DATA_START_COL,
+      lastRow - CONFIG.STORE_CONFIG.DATA_START_ROW + 1,
+      lastCol - CONFIG.STORE_CONFIG.DATA_START_COL + 1
+    ).getValues();
+
+    const dateColMap = {};
+    for (let i = 0; i < dateHeaders.length; i++) {
+      const day = Utils.extractDay(dateHeaders[i]);
+      if (day) {
+        dateColMap[day] = i;
+      }
+    }
+
+    const result = [];
+    for (const item of shiftData) {
+      const newItem = { ...item };
+
+      // OJTの場合は既にトレーナーの略称が設定されているので、そのまま使用
+      if (item.isOJT && item.coworkers) {
+        newItem.coworkers = item.coworkers;
+      } else if (item.projectName) {
+        newItem.coworkers = this._findCoworkers(item.projectName, item.date, targetNickname, storeNames, staffData, dateColMap);
+      } else {
+        newItem.coworkers = "";
+      }
+
+      result.push(newItem);
+    }
+
+    return result;
+  },
+
+  /**
+   * トレーナーのシフトにOJT訓練生情報を追加
+   * @param {Array} shiftData - シフトデータ配列
+   * @param {string} trainerName - トレーナーの名前
+   * @param {Object|null} cache - キャッシュデータ（オプション）
+   * @returns {Array} OJT訓練生情報が追加されたシフトデータ
+   */
+  addOJTTraineesInfo(shiftData, trainerName, cache = null) {
+    if (cache) {
+      return this._addOJTTraineesInfoFromCache(shiftData, trainerName, cache);
+    }
+
+    const nicknameMap = DataAccess.getNicknameMap();
+    const allOJTData = DataAccess.getAllOJTData();
+
+    if (!allOJTData || allOJTData.length === 0) {
+      return shiftData;
+    }
+
+    // このトレーナーのOJT対象者を日付別に整理
+    const traineesByDate = {};
+
+    for (const ojtItem of allOJTData) {
+      if (ojtItem.trainerInfo && ojtItem.trainerInfo.name === trainerName) {
+        const traineeNickname = nicknameMap[ojtItem.traineeName] || ojtItem.traineeName;
+
+        if (!traineesByDate[ojtItem.date]) {
+          traineesByDate[ojtItem.date] = [];
+        }
+        traineesByDate[ojtItem.date].push(traineeNickname);
+      }
+    }
+
+    // shiftDataにOJT対象者を追加
+    const result = [];
+    for (const item of shiftData) {
+      const newItem = { ...item };
+
+      // この日にOJT対象者がいる場合
+      if (traineesByDate[item.date]) {
+        const existingCoworkers = newItem.coworkers || "";
+        const trainees = traineesByDate[item.date].sort().join("・");
+
+        if (existingCoworkers) {
+          // 既存の同時入店スタッフにOJT対象者を追加
+          newItem.coworkers = `${existingCoworkers}・${trainees}`;
+        } else {
+          newItem.coworkers = trainees;
+        }
+      }
+
+      result.push(newItem);
+    }
+
+    return result;
+  },
+
+  /**
+   * OJTデータの一括構築（最適化版）
+   * @param {Array} allShiftData - 全シフトデータ
+   * @param {Array} allShiftBackgrounds - 全シフト背景色データ
+   * @param {Array} dateHeaders - 日付ヘッダー
+   * @param {Object} nameRowMap - 名前→行インデックスのマップ
+   * @param {number} startCol - 開始列番号
+   * @returns {Array} 構築されたOJTデータ配列
+   */
+  buildAllOJTData(allShiftData, allShiftBackgrounds, dateHeaders, nameRowMap, startCol) {
+    const allOJTData = [];
+
+    // 色ごとのトレーナー情報をキャッシュ（日付×色でキー）
+    const colorToTrainerCache = {};
+
+    for (const processedName in nameRowMap) {
+      const rowIndex = nameRowMap[processedName];
+      const projectData = allShiftData[rowIndex].slice(startCol - 1);
+
+      for (let i = 0; i < dateHeaders.length; i++) {
+        const day = Utils.extractDay(dateHeaders[i]);
+        if (day && projectData[i] === "OJT") {
+          const colIndex = startCol + i;
+          const backgroundColor = allShiftBackgrounds[rowIndex][colIndex - 1];
+
+          // キャッシュキー: 日付-色
+          const cacheKey = `${day}-${backgroundColor}`;
+
+          // キャッシュから取得、なければ検索
+          if (!colorToTrainerCache[cacheKey]) {
+            colorToTrainerCache[cacheKey] = this._findTrainerByColor(
+              allShiftData,
+              allShiftBackgrounds,
+              backgroundColor,
+              colIndex,
+              nameRowMap
+            );
+          }
+
+          const trainerInfo = colorToTrainerCache[cacheKey];
+
+          // 自分がトレーナーでないことを確認
+          if (trainerInfo && trainerInfo.name !== processedName) {
+            allOJTData.push({
+              traineeName: processedName,
+              date: day,
+              trainerInfo
+            });
+          } else if (!trainerInfo) {
+            allOJTData.push({
+              traineeName: processedName,
+              date: day,
+              trainerInfo: null
+            });
+          }
+        }
+      }
+    }
+
+    return allOJTData;
+  },
+
+  /**
+   * OJTデータの処理と変換
+   * @param {string} name - 対象者名
+   * @param {Object} cache - キャッシュデータ
+   * @returns {Array} 処理されたOJTデータ配列
+   */
+  processOJTData(name, cache) {
+    const processedOJT = [];
+    const ojtItems = [];
+
+    for (const item of cache.allOJTData) {
+      if (item.traineeName === name) {
+        ojtItems.push(item);
+      }
+    }
+
+    for (const ojtItem of ojtItems) {
+      if (ojtItem.trainerInfo) {
+        const trainerProjectName = ojtItem.trainerInfo.projectName;
+        const resourceInfo = cache.resourceMap[trainerProjectName];
+
+        let hours = "";
+        let venue = "";
+        let scheduleText = "";
+
+        if (resourceInfo && resourceInfo.length > 0) {
+          hours = ScheduleParser.extractWorkingHours(resourceInfo[0].hours, ojtItem.date);
+          scheduleText = resourceInfo[0].scheduleText;
+
+          const venues = ScheduleParser.extractVenues(scheduleText, ojtItem.date);
+
+          if (venues.length > 0) {
+            venue = venues[0];
+          }
+
+          if (!venue || venue.indexOf("軒先") !== -1 || venue.indexOf("ヘルパー") !== -1 || venue.indexOf("店頭") !== -1) {
+            venue = BusinessLogic._getProjectBaseName(trainerProjectName);
+          }
+        }
+
+        const trainerNickname = cache.nicknameMap[ojtItem.trainerInfo.name] || ojtItem.trainerInfo.name;
+
+        processedOJT.push({
+          date: ojtItem.date,
+          projectName: trainerProjectName,
+          content: BusinessLogic._determineContent(trainerProjectName, scheduleText, ojtItem.date),
+          venue,
+          hours,
+          hasResourceData: true,
+          isOJT: true,
+          trainerName: ojtItem.trainerInfo.name,
+          coworkers: trainerNickname,
+        });
+      } else {
+        processedOJT.push({
+          date: ojtItem.date,
+          projectName: "",
+          content: "",
+          venue: "",
+          hours: "",
+          hasResourceData: false,
+          isOJT: true,
+          trainerName: null,
+          needsTrainerConfirmation: true,
+        });
+      }
+    }
+
+    return processedOJT;
+  },
+
+  /**
+   * 同僚を検索（内部メソッド）
+   * @private
+   */
+  _findCoworkers(projectName, targetDate, excludeNickname, storeNames, staffData, dateColMap) {
+    const baseName = Utils.extractBaseName(projectName);
+    const colIndex = dateColMap[targetDate];
+
+    if (colIndex === undefined) return "";
+
+    const coworkersSet = {};
+
+    for (let i = 0; i < storeNames.length; i++) {
+      const storeName = storeNames[i][0];
+      if (!storeName) continue;
+
+      const storeBaseName = Utils.extractBaseName(storeName);
+
+      if (storeBaseName === baseName) {
+        const staffNickname = staffData[i][colIndex];
+
+        if (staffNickname && staffNickname !== excludeNickname) {
+          coworkersSet[staffNickname] = true;
+        }
+      }
+    }
+
+    return Object.keys(coworkersSet).sort().join("・");
+  },
+
+  /**
+   * トレーナーを色で検索（内部メソッド）
+   * @private
+   */
+  _findTrainerByColor(allShiftData, allShiftBackgrounds, targetColor, targetCol, nameRowMap) {
+    // 全メンバーから色が一致する最初の人を探す
+    for (const processedName in nameRowMap) {
+      const rowIndex = nameRowMap[processedName];
+      const cellColor = allShiftBackgrounds[rowIndex][targetCol - 1];
+
+      if (cellColor === targetColor) {
+        const projectName = allShiftData[rowIndex][targetCol - 1];
+        if (projectName && projectName !== "OJT") {
+          return { name: processedName, projectName };
+        }
+      }
+    }
+
+    return null;
+  },
+
+  /**
+   * キャッシュから同僚情報を追加（内部メソッド）
+   * @private
+   */
+  _addCoworkersInfoFromCache(shiftData, selectedName, cache) {
+    const targetNickname = cache.nicknameMap[selectedName];
+
+    if (!targetNickname || !cache.storeData) {
+      return shiftData;
+    }
+
+    const dateColMap = {};
+    for (let i = 0; i < cache.storeData.dateHeaders.length; i++) {
+      const day = Utils.extractDay(cache.storeData.dateHeaders[i]);
+      if (day) {
+        dateColMap[day] = i;
+      }
+    }
+
+    const result = [];
+    for (const item of shiftData) {
+      const newItem = { ...item };
+
+      if (item.isOJT && item.coworkers) {
+        newItem.coworkers = item.coworkers;
+      } else if (item.projectName) {
+        newItem.coworkers = this._findCoworkers(
+          item.projectName,
+          item.date,
+          targetNickname,
+          cache.storeData.names,
+          cache.storeData.staffData,
+          dateColMap
+        );
+      } else {
+        newItem.coworkers = "";
+      }
+
+      result.push(newItem);
+    }
+
+    return result;
+  },
+
+  /**
+   * キャッシュからOJT訓練生情報を追加（内部メソッド）
+   * @private
+   */
+  _addOJTTraineesInfoFromCache(shiftData, trainerName, cache) {
+    const traineesByDate = {};
+
+    for (const ojtItem of cache.allOJTData) {
+      if (ojtItem.trainerInfo && ojtItem.trainerInfo.name === trainerName) {
+        const traineeNickname = cache.nicknameMap[ojtItem.traineeName] || ojtItem.traineeName;
+
+        if (!traineesByDate[ojtItem.date]) {
+          traineesByDate[ojtItem.date] = [];
+        }
+        traineesByDate[ojtItem.date].push(traineeNickname);
+      }
+    }
+
+    const result = [];
+    for (const item of shiftData) {
+      const newItem = { ...item };
+
+      if (traineesByDate[item.date]) {
+        const existingCoworkers = newItem.coworkers || "";
+        const trainees = traineesByDate[item.date].sort().join("・");
+
+        if (existingCoworkers) {
+          newItem.coworkers = `${existingCoworkers}・${trainees}`;
+        } else {
+          newItem.coworkers = trainees;
+        }
+      }
+
+      result.push(newItem);
+    }
+
+    return result;
+  }
+};
+
+// ========================================
 // エラーハンドリングモジュール
 // ========================================
 /**
@@ -3506,143 +3926,25 @@ const BusinessLogic = {
     return ScheduleParser.extractWorkingHours(hoursText, targetDate);
   },
 
+  /**
+   * @deprecated CoworkerOJTManager.addCoworkersInfo() を使用してください
+   */
   addCoworkersInfo(shiftData, selectedName) {
-    const nicknameMap = DataAccess.getNicknameMap();
-    const targetNickname = nicknameMap[selectedName];
-
-    if (!targetNickname) {
-      Logger.log(`${selectedName}の略称が見つかりません`);
-      return shiftData;
-    }
-
-    const storeSheet = DataAccess.getStoreSheet();
-    if (!storeSheet) {
-      Logger.log("店舗別シートが見つかりません");
-      return shiftData;
-    }
-
-    const lastRow = storeSheet.getLastRow();
-    const lastCol = storeSheet.getLastColumn();
-
-    const storeNames = storeSheet.getRange(
-      CONFIG.STORE_CONFIG.DATA_START_ROW,
-      CONFIG.STORE_CONFIG.NAME_COL,
-      lastRow - CONFIG.STORE_CONFIG.DATA_START_ROW + 1,
-      1
-    ).getValues();
-
-    const dateHeaders = storeSheet.getRange(
-      CONFIG.STORE_CONFIG.DATE_ROW,
-      CONFIG.STORE_CONFIG.DATA_START_COL,
-      1,
-      lastCol - CONFIG.STORE_CONFIG.DATA_START_COL + 1
-    ).getValues()[0];
-
-    const staffData = storeSheet.getRange(
-      CONFIG.STORE_CONFIG.DATA_START_ROW,
-      CONFIG.STORE_CONFIG.DATA_START_COL,
-      lastRow - CONFIG.STORE_CONFIG.DATA_START_ROW + 1,
-      lastCol - CONFIG.STORE_CONFIG.DATA_START_COL + 1
-    ).getValues();
-
-    const dateColMap = {};
-    for (let i = 0; i < dateHeaders.length; i++) {
-      const day = Utils.extractDay(dateHeaders[i]);
-      if (day) {
-        dateColMap[day] = i;
-      }
-    }
-
-    const result = [];
-    for (const item of shiftData) {
-      const newItem = { ...item };
-
-      // OJTの場合は既にトレーナーの略称が設定されているので、そのまま使用
-      if (item.isOJT && item.coworkers) {
-        newItem.coworkers = item.coworkers;
-      } else if (item.projectName) {
-        newItem.coworkers = this._findCoworkersFromCache(item.projectName, item.date, targetNickname, storeNames, staffData, dateColMap);
-      } else {
-        newItem.coworkers = "";
-      }
-
-      result.push(newItem);
-    }
-
-    return result;
+    return CoworkerOJTManager.addCoworkersInfo(shiftData, selectedName);
   },
 
+  /**
+   * @deprecated CoworkerOJTManager._findCoworkers() を使用してください
+   */
   _findCoworkersFromCache(projectName, targetDate, excludeNickname, storeNames, staffData, dateColMap) {
-    const baseName = Utils.extractBaseName(projectName);
-    const colIndex = dateColMap[targetDate];
-
-    if (colIndex === undefined) return "";
-
-    const coworkersSet = {};
-
-    for (let i = 0; i < storeNames.length; i++) {
-      const storeName = storeNames[i][0];
-      if (!storeName) continue;
-
-      const storeBaseName = Utils.extractBaseName(storeName);
-
-      if (storeBaseName === baseName) {
-        const staffNickname = staffData[i][colIndex];
-
-        if (staffNickname && staffNickname !== excludeNickname) {
-          coworkersSet[staffNickname] = true;
-        }
-      }
-    }
-
-    return Object.keys(coworkersSet).sort().join("・");
+    return CoworkerOJTManager._findCoworkers(projectName, targetDate, excludeNickname, storeNames, staffData, dateColMap);
   },
 
-  // トレーナーの同時入店スタッフにOJT対象者を追加
+  /**
+   * @deprecated CoworkerOJTManager.addOJTTraineesInfo() を使用してください
+   */
   addOJTTraineesInfo(shiftData, trainerName) {
-    const nicknameMap = DataAccess.getNicknameMap();
-    const allOJTData = DataAccess.getAllOJTData();
-
-    if (!allOJTData || allOJTData.length === 0) {
-      return shiftData;
-    }
-
-    // このトレーナーのOJT対象者を日付別に整理
-    const traineesByDate = {};
-
-    for (const ojtItem of allOJTData) {
-      if (ojtItem.trainerInfo && ojtItem.trainerInfo.name === trainerName) {
-        const traineeNickname = nicknameMap[ojtItem.traineeName] || ojtItem.traineeName;
-
-        if (!traineesByDate[ojtItem.date]) {
-          traineesByDate[ojtItem.date] = [];
-        }
-        traineesByDate[ojtItem.date].push(traineeNickname);
-      }
-    }
-
-    // shiftDataにOJT対象者を追加
-    const result = [];
-    for (const item of shiftData) {
-      const newItem = { ...item };
-
-      // この日にOJT対象者がいる場合
-      if (traineesByDate[item.date]) {
-        const existingCoworkers = newItem.coworkers || "";
-        const trainees = traineesByDate[item.date].sort().join("・");
-
-        if (existingCoworkers) {
-          // 既存の同時入店スタッフにOJT対象者を追加
-          newItem.coworkers = `${existingCoworkers}・${trainees}`;
-        } else {
-          newItem.coworkers = trainees;
-        }
-      }
-
-      result.push(newItem);
-    }
-
-    return result;
+    return CoworkerOJTManager.addOJTTraineesInfo(shiftData, trainerName);
   },
 };
 
@@ -4752,75 +5054,18 @@ const ShiftTransferController = {
   },
 
   // OJTデータ構築の最適化（色インデックスマップを使用）
+  /**
+   * @deprecated CoworkerOJTManager.buildAllOJTData() を使用してください
+   */
   _buildAllOJTDataOptimized(allShiftData, allShiftBackgrounds, dateHeaders, nameRowMap, startCol) {
-    const allOJTData = [];
-
-    // 色ごとのトレーナー情報をキャッシュ（日付×色でキー）
-    const colorToTrainerCache = {};
-
-    for (const processedName in nameRowMap) {
-      const rowIndex = nameRowMap[processedName];
-      const projectData = allShiftData[rowIndex].slice(startCol - 1);
-
-      for (let i = 0; i < dateHeaders.length; i++) {
-        const day = Utils.extractDay(dateHeaders[i]);
-        if (day && projectData[i] === "OJT") {
-          const colIndex = startCol + i;
-          const backgroundColor = allShiftBackgrounds[rowIndex][colIndex - 1];
-
-          // キャッシュキー: 日付-色
-          const cacheKey = `${day}-${backgroundColor}`;
-
-          // キャッシュから取得、なければ検索
-          if (!colorToTrainerCache[cacheKey]) {
-            colorToTrainerCache[cacheKey] = this._findTrainerByColorOptimized(
-              allShiftData,
-              allShiftBackgrounds,
-              backgroundColor,
-              colIndex,
-              nameRowMap
-            );
-          }
-
-          const trainerInfo = colorToTrainerCache[cacheKey];
-
-          // 自分がトレーナーでないことを確認
-          if (trainerInfo && trainerInfo.name !== processedName) {
-            allOJTData.push({
-              traineeName: processedName,
-              date: day,
-              trainerInfo
-            });
-          } else if (!trainerInfo) {
-            allOJTData.push({
-              traineeName: processedName,
-              date: day,
-              trainerInfo: null
-            });
-          }
-        }
-      }
-    }
-
-    return allOJTData;
+    return CoworkerOJTManager.buildAllOJTData(allShiftData, allShiftBackgrounds, dateHeaders, nameRowMap, startCol);
   },
 
-  // トレーナー検索の最適化
+  /**
+   * @deprecated CoworkerOJTManager._findTrainerByColor() を使用してください
+   */
   _findTrainerByColorOptimized(allShiftData, allShiftBackgrounds, targetColor, targetCol, nameRowMap) {
-    // 全メンバーから色が一致する最初の人を探す
-    for (const processedName in nameRowMap) {
-      const rowIndex = nameRowMap[processedName];
-      const cellColor = allShiftBackgrounds[rowIndex][targetCol - 1];
-
-      if (cellColor === targetColor) {
-        const projectName = allShiftData[rowIndex][targetCol - 1];
-        if (projectName && projectName !== "OJT") {
-          return { name: processedName, projectName };
-        }
-      }
-    }
-
-    return null;
+    return CoworkerOJTManager._findTrainerByColor(allShiftData, allShiftBackgrounds, targetColor, targetCol, nameRowMap);
   },
 
   // 個人転記の最適化版
@@ -4966,144 +5211,25 @@ const ShiftTransferController = {
     return { data: result, errors };
   },
 
+  /**
+   * @deprecated CoworkerOJTManager.processOJTData() を使用してください
+   */
   _processOJTDataFromCache(name, cache) {
-    const processedOJT = [];
-    const ojtItems = [];
-
-    for (const item of cache.allOJTData) {
-      if (item.traineeName === name) {
-        ojtItems.push(item);
-      }
-    }
-
-    for (const ojtItem of ojtItems) {
-      if (ojtItem.trainerInfo) {
-        const trainerProjectName = ojtItem.trainerInfo.projectName;
-        const resourceInfo = cache.resourceMap[trainerProjectName];
-
-        let hours = "";
-        let venue = "";
-        let scheduleText = "";
-
-        if (resourceInfo && resourceInfo.length > 0) {
-          hours = BusinessLogic._extractWorkingHours(resourceInfo[0].hours, ojtItem.date);
-          scheduleText = resourceInfo[0].scheduleText;
-
-          const venues = BusinessLogic._extractVenuesFromSchedule(scheduleText, ojtItem.date);
-
-          if (venues.length > 0) {
-            venue = venues[0];
-          }
-
-          if (!venue || venue.indexOf("軒先") !== -1 || venue.indexOf("ヘルパー") !== -1 || venue.indexOf("店頭") !== -1) {
-            venue = BusinessLogic._getProjectBaseName(trainerProjectName);
-          }
-        }
-
-        const trainerNickname = cache.nicknameMap[ojtItem.trainerInfo.name] || ojtItem.trainerInfo.name;
-
-        processedOJT.push({
-          date: ojtItem.date,
-          projectName: trainerProjectName,
-          content: BusinessLogic._determineContent(trainerProjectName, scheduleText, ojtItem.date),
-          venue,
-          hours,
-          hasResourceData: true,
-          isOJT: true,
-          trainerName: ojtItem.trainerInfo.name,
-          coworkers: trainerNickname,
-        });
-      } else {
-        processedOJT.push({
-          date: ojtItem.date,
-          projectName: "",
-          content: "",
-          venue: "",
-          hours: "",
-          hasResourceData: false,
-          isOJT: true,
-          trainerName: null,
-          needsTrainerConfirmation: true,
-        });
-      }
-    }
-
-    return processedOJT;
+    return CoworkerOJTManager.processOJTData(name, cache);
   },
 
+  /**
+   * @deprecated CoworkerOJTManager.addCoworkersInfo() を使用してください
+   */
   _addCoworkersInfoFromCache(shiftData, selectedName, cache) {
-    const targetNickname = cache.nicknameMap[selectedName];
-
-    if (!targetNickname || !cache.storeData) {
-      return shiftData;
-    }
-
-    const dateColMap = {};
-    for (let i = 0; i < cache.storeData.dateHeaders.length; i++) {
-      const day = Utils.extractDay(cache.storeData.dateHeaders[i]);
-      if (day) {
-        dateColMap[day] = i;
-      }
-    }
-
-    const result = [];
-    for (const item of shiftData) {
-      const newItem = { ...item };
-
-      if (item.isOJT && item.coworkers) {
-        newItem.coworkers = item.coworkers;
-      } else if (item.projectName) {
-        newItem.coworkers = BusinessLogic._findCoworkersFromCache(
-          item.projectName,
-          item.date,
-          targetNickname,
-          cache.storeData.names,
-          cache.storeData.staffData,
-          dateColMap
-        );
-      } else {
-        newItem.coworkers = "";
-      }
-
-      result.push(newItem);
-    }
-
-    return result;
+    return CoworkerOJTManager.addCoworkersInfo(shiftData, selectedName, cache);
   },
 
+  /**
+   * @deprecated CoworkerOJTManager.addOJTTraineesInfo() を使用してください
+   */
   _addOJTTraineesInfoFromCache(shiftData, trainerName, cache) {
-    const traineesByDate = {};
-
-    for (const ojtItem of cache.allOJTData) {
-      if (ojtItem.trainerInfo && ojtItem.trainerInfo.name === trainerName) {
-        const traineeNickname = cache.nicknameMap[ojtItem.traineeName] || ojtItem.traineeName;
-
-        if (!traineesByDate[ojtItem.date]) {
-          traineesByDate[ojtItem.date] = [];
-        }
-        traineesByDate[ojtItem.date].push(traineeNickname);
-      }
-    }
-
-    const result = [];
-    for (const item of shiftData) {
-      const newItem = { ...item };
-
-      if (traineesByDate[item.date]) {
-        const existingCoworkers = newItem.coworkers || "";
-        const trainees = traineesByDate[item.date].sort().join("・");
-
-        if (existingCoworkers) {
-          newItem.coworkers = `${existingCoworkers}・${trainees}`;
-        } else {
-          newItem.coworkers = trainees;
-        }
-      }
-
-      result.push(newItem);
-    }
-
-    return result;
+    return CoworkerOJTManager.addOJTTraineesInfo(shiftData, trainerName, cache);
   },
 
   // キャッシュからカスタムプロジェクトデータを取得

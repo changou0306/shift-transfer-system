@@ -675,6 +675,282 @@ function testScheduleParser() {
 }
 
 // ========================================
+// CoworkerOJTManager テスト
+// ========================================
+
+function testCoworkerOJTManager() {
+  TestRunner.suite("CoworkerOJTManager");
+
+  // ========================================
+  // addCoworkersInfo テスト
+  // ========================================
+
+  TestRunner.test("addCoworkersInfo - empty shift data", () => {
+    const result = CoworkerOJTManager.addCoworkersInfo([], "TestUser");
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("addCoworkersInfo - null shift data", () => {
+    const result = CoworkerOJTManager.addCoworkersInfo(null, "TestUser");
+    assert.equal(result, null);
+  });
+
+  TestRunner.test("addCoworkersInfo - with cache parameter", () => {
+    const shiftData = [
+      { date: 1, projectName: "Test Project", coworkers: "" }
+    ];
+    const cache = {
+      nicknameMap: { "TestUser": "TU" },
+      storeData: {
+        names: [["Test Project"]],
+        staffData: [["TU2"]],
+        dateHeaders: ["11/1(金)"]
+      }
+    };
+    const result = CoworkerOJTManager.addCoworkersInfo(shiftData, "TestUser", cache);
+    assert.equal(Array.isArray(result), true);
+    assert.equal(result.length, 1);
+  });
+
+  // ========================================
+  // addOJTTraineesInfo テスト
+  // ========================================
+
+  TestRunner.test("addOJTTraineesInfo - empty shift data", () => {
+    const result = CoworkerOJTManager.addOJTTraineesInfo([], "Trainer");
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("addOJTTraineesInfo - with cache, no OJT data", () => {
+    const shiftData = [
+      { date: 1, coworkers: "" }
+    ];
+    const cache = {
+      nicknameMap: {},
+      allOJTData: []
+    };
+    const result = CoworkerOJTManager.addOJTTraineesInfo(shiftData, "Trainer", cache);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].coworkers, "");
+  });
+
+  TestRunner.test("addOJTTraineesInfo - with cache, has OJT data", () => {
+    const shiftData = [
+      { date: 1, coworkers: "" }
+    ];
+    const cache = {
+      nicknameMap: { "Trainee1": "T1" },
+      allOJTData: [
+        {
+          traineeName: "Trainee1",
+          date: 1,
+          trainerInfo: { name: "Trainer", projectName: "Project" }
+        }
+      ]
+    };
+    const result = CoworkerOJTManager.addOJTTraineesInfo(shiftData, "Trainer", cache);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].coworkers, "T1");
+  });
+
+  // ========================================
+  // buildAllOJTData テスト
+  // ========================================
+
+  TestRunner.test("buildAllOJTData - empty data", () => {
+    const result = CoworkerOJTManager.buildAllOJTData([], [], [], {}, 1);
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("buildAllOJTData - with OJT entries", () => {
+    const allShiftData = [
+      ["", "OJT", "Project1"],
+      ["", "Project2", "Project3"]
+    ];
+    const allShiftBackgrounds = [
+      ["#ffffff", "#ff0000", "#ff0000"],
+      ["#ffffff", "#ff0000", "#00ff00"]
+    ];
+    const dateHeaders = ["11/1(金)", "11/2(土)"];
+    const nameRowMap = { "Trainee": 0, "Trainer": 1 };
+    const startCol = 2;
+
+    const result = CoworkerOJTManager.buildAllOJTData(
+      allShiftData,
+      allShiftBackgrounds,
+      dateHeaders,
+      nameRowMap,
+      startCol
+    );
+
+    assert.equal(Array.isArray(result), true);
+    assert.equal(result.length >= 0, true);
+  });
+
+  // ========================================
+  // processOJTData テスト
+  // ========================================
+
+  TestRunner.test("processOJTData - no OJT data for user", () => {
+    const cache = {
+      allOJTData: [],
+      nicknameMap: {},
+      resourceMap: {}
+    };
+    const result = CoworkerOJTManager.processOJTData("User1", cache);
+    assert.arrayEqual(result, []);
+  });
+
+  TestRunner.test("processOJTData - with OJT data but no trainer", () => {
+    const cache = {
+      allOJTData: [
+        {
+          traineeName: "User1",
+          date: 1,
+          trainerInfo: null
+        }
+      ],
+      nicknameMap: {},
+      resourceMap: {}
+    };
+    const result = CoworkerOJTManager.processOJTData("User1", cache);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].isOJT, true);
+    assert.equal(result[0].trainerName, null);
+    assert.equal(result[0].needsTrainerConfirmation, true);
+  });
+
+  TestRunner.test("processOJTData - with trainer info", () => {
+    const cache = {
+      allOJTData: [
+        {
+          traineeName: "User1",
+          date: 1,
+          trainerInfo: {
+            name: "Trainer1",
+            projectName: "Project1"
+          }
+        }
+      ],
+      nicknameMap: { "Trainer1": "T1" },
+      resourceMap: {
+        "Project1": [
+          {
+            hours: "9:00-17:00",
+            scheduleText: ""
+          }
+        ]
+      }
+    };
+    const result = CoworkerOJTManager.processOJTData("User1", cache);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].isOJT, true);
+    assert.equal(result[0].trainerName, "Trainer1");
+    assert.equal(result[0].coworkers, "T1");
+  });
+
+  // ========================================
+  // _findCoworkers (内部メソッド) テスト
+  // ========================================
+
+  TestRunner.test("_findCoworkers - no matching date", () => {
+    const result = CoworkerOJTManager._findCoworkers(
+      "Project1",
+      99,
+      "TU",
+      [["Project1"]],
+      [["TU2"]],
+      { 1: 0 }
+    );
+    assert.equal(result, "");
+  });
+
+  TestRunner.test("_findCoworkers - with matching coworkers", () => {
+    const storeNames = [["Project1①"], ["Project1②"]];
+    const staffData = [["TU"], ["TU2"]];
+    const dateColMap = { 1: 0 };
+
+    const result = CoworkerOJTManager._findCoworkers(
+      "Project1①",
+      1,
+      "TU",
+      storeNames,
+      staffData,
+      dateColMap
+    );
+
+    assert.equal(typeof result, "string");
+    // Should not include the excluded nickname "TU"
+  });
+
+  // ========================================
+  // _findTrainerByColor (内部メソッド) テスト
+  // ========================================
+
+  TestRunner.test("_findTrainerByColor - no matching color", () => {
+    const allShiftData = [["Project1"]];
+    const allShiftBackgrounds = [["#ffffff"]];
+    const nameRowMap = { "User1": 0 };
+
+    const result = CoworkerOJTManager._findTrainerByColor(
+      allShiftData,
+      allShiftBackgrounds,
+      "#ff0000",
+      1,
+      nameRowMap
+    );
+
+    assert.equal(result, null);
+  });
+
+  TestRunner.test("_findTrainerByColor - matching color found", () => {
+    const allShiftData = [["Project1"], ["Project2"]];
+    const allShiftBackgrounds = [["#ff0000"], ["#ff0000"]];
+    const nameRowMap = { "Trainee": 0, "Trainer": 1 };
+
+    const result = CoworkerOJTManager._findTrainerByColor(
+      allShiftData,
+      allShiftBackgrounds,
+      "#ff0000",
+      1,
+      nameRowMap
+    );
+
+    assert.notNull(result);
+    assert.equal(result.name, "Trainee");
+    assert.equal(result.projectName, "Project1");
+  });
+
+  TestRunner.test("_findTrainerByColor - skip OJT entries", () => {
+    const allShiftData = [["OJT"], ["Project2"]];
+    const allShiftBackgrounds = [["#ff0000"], ["#ff0000"]];
+    const nameRowMap = { "Trainee": 0, "Trainer": 1 };
+
+    const result = CoworkerOJTManager._findTrainerByColor(
+      allShiftData,
+      allShiftBackgrounds,
+      "#ff0000",
+      1,
+      nameRowMap
+    );
+
+    // Should skip the "OJT" entry and find "Project2"
+    assert.notNull(result);
+    assert.equal(result.projectName, "Project2");
+  });
+}
+
+/**
+ * CoworkerOJTManager テストのみ実行
+ */
+function runCoworkerOJTManagerTests() {
+  Logger.log("🧪 Running CoworkerOJTManager Tests...\n");
+  TestRunner.reset();
+  testCoworkerOJTManager();
+  TestRunner.summary();
+}
+
+// ========================================
 // メインテスト実行関数
 // ========================================
 
@@ -694,6 +970,7 @@ function runAllTests() {
   testErrorHandler();
   testStoreNameMaster();
   testScheduleParser();
+  testCoworkerOJTManager();
 
   // サマリーを表示
   TestRunner.summary();
