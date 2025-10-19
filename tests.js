@@ -1146,6 +1146,176 @@ function runSheetFormatterTests() {
   TestRunner.summary();
 }
 
+/**
+ * ResourceEnrichment テスト
+ */
+function testResourceEnrichment() {
+  TestRunner.suite("ResourceEnrichment");
+
+  // buildResourceMap tests
+  TestRunner.test("buildResourceMap - empty data", () => {
+    const result = ResourceEnrichment.buildResourceMap([], {}, {});
+    assert.deepEqual(result, {});
+  });
+
+  TestRunner.test("buildResourceMap - single project", () => {
+    const resourceData = [
+      ["", "プロジェクトA", "", "", "9:00-18:00", "ベイシア：11/1-3"]
+    ];
+    const hoursMap = {};
+    const scheduleMap = {};
+
+    const result = ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
+
+    assert.notNull(result["プロジェクトA"]);
+    assert.equal(result["プロジェクトA"].length, 1);
+    assert.equal(result["プロジェクトA"][0].hours, "9:00-18:00");
+    assert.equal(result["プロジェクトA"][0].scheduleText, "ベイシア：11/1-3");
+  });
+
+  TestRunner.test("buildResourceMap - multiple entries for same project", () => {
+    const resourceData = [
+      ["", "プロジェクトA", "", "", "9:00-18:00", "ベイシア：11/1-3"],
+      ["", "プロジェクトA", "", "", "10:00-17:00", "カスミ：11/5-7"]
+    ];
+    const hoursMap = {};
+    const scheduleMap = {};
+
+    const result = ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
+
+    assert.equal(result["プロジェクトA"].length, 2);
+    assert.equal(result["プロジェクトA"][0].hours, "9:00-18:00");
+    assert.equal(result["プロジェクトA"][1].hours, "10:00-17:00");
+  });
+
+  TestRunner.test("buildResourceMap - use hoursMap when available", () => {
+    const resourceData = [
+      ["", "プロジェクトA", "", "", "9:00-18:00", "ベイシア：11/1-3"]
+    ];
+    const hoursMap = { 2: "11/1: 10:00-19:00" };
+    const scheduleMap = {};
+
+    const result = ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
+
+    assert.equal(result["プロジェクトA"][0].hours, "11/1: 10:00-19:00");
+  });
+
+  TestRunner.test("buildResourceMap - use scheduleMap when available", () => {
+    const resourceData = [
+      ["", "プロジェクトA", "", "", "9:00-18:00", "ベイシア：11/1-3"]
+    ];
+    const hoursMap = {};
+    const scheduleMap = { 2: "カスミ神栖：11/14" };
+
+    const result = ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
+
+    assert.equal(result["プロジェクトA"][0].scheduleText, "カスミ神栖：11/14");
+  });
+
+  // getProjectBaseName tests
+  TestRunner.test("getProjectBaseName - with number suffix", () => {
+    const result = ResourceEnrichment.getProjectBaseName("テラス湘南①");
+    assert.equal(result, "テラス湘南");
+  });
+
+  TestRunner.test("getProjectBaseName - without suffix", () => {
+    const result = ResourceEnrichment.getProjectBaseName("ベイシア");
+    assert.equal(result, "ベイシア");
+  });
+
+  TestRunner.test("getProjectBaseName - null input", () => {
+    const result = ResourceEnrichment.getProjectBaseName(null);
+    assert.equal(result, "");
+  });
+
+  // loadCustomProjectsData tests
+  TestRunner.test("loadCustomProjectsData - function exists", () => {
+    assert.isFunction(ResourceEnrichment.loadCustomProjectsData);
+  });
+
+  // getMergedCellMap tests
+  TestRunner.test("getMergedCellMap - function exists", () => {
+    assert.isFunction(ResourceEnrichment.getMergedCellMap);
+  });
+
+  // enrichShiftItem tests
+  TestRunner.test("enrichShiftItem - empty resourceMap", () => {
+    const item = { date: 1, projectName: "テストプロジェクト" };
+    const resourceMap = {};
+
+    const result = ResourceEnrichment.enrichShiftItem(item, resourceMap);
+
+    assert.equal(result.date, 1);
+    assert.equal(result.projectName, "テストプロジェクト");
+    assert.equal(result.hasResourceData, false);
+    assert.notNull(result.errorMessage);
+  });
+
+  TestRunner.test("enrichShiftItem - null resourceInfo", () => {
+    const item = { date: 1, projectName: "存在しない案件" };
+    const resourceMap = { "他の案件": [] };
+
+    const result = ResourceEnrichment.enrichShiftItem(item, resourceMap);
+
+    assert.equal(result.hasResourceData, false);
+  });
+
+  // enrichWithResourceData tests
+  TestRunner.test("enrichWithResourceData - empty shift data", () => {
+    const result = ResourceEnrichment.enrichWithResourceData([]);
+    assert.arrayEqual(result.data, []);
+    assert.arrayEqual(result.errors, []);
+  });
+
+  TestRunner.test("enrichWithResourceData - 座学 special handling", () => {
+    const shiftData = [{ date: 1, projectName: "座学" }];
+    const result = ResourceEnrichment.enrichWithResourceData(shiftData);
+
+    assert.equal(result.data.length, 1);
+    assert.equal(result.data[0].projectName, "座学");
+    assert.equal(result.data[0].content, "研修");
+    assert.equal(result.data[0].venue, "東船橋事務所");
+    assert.equal(result.data[0].hasResourceData, true);
+  });
+
+  TestRunner.test("enrichWithResourceData - project not found", () => {
+    const shiftData = [{ date: 1, projectName: "存在しない案件" }];
+    const result = ResourceEnrichment.enrichWithResourceData(shiftData);
+
+    assert.equal(result.data.length, 1);
+    assert.equal(result.data[0].hasResourceData, false);
+    assert.equal(result.errors.length, 1);
+  });
+
+  TestRunner.test("enrichWithResourceData - with cache parameter", () => {
+    const shiftData = [{ date: 1, projectName: "座学" }];
+    const cache = {
+      resourceMap: {},
+      customProjectsData: []
+    };
+
+    const result = ResourceEnrichment.enrichWithResourceData(shiftData, cache);
+
+    assert.equal(result.data.length, 1);
+    assert.equal(result.data[0].content, "研修");
+  });
+
+  TestRunner.test("enrichWithResourceData - null input", () => {
+    const result = ResourceEnrichment.enrichWithResourceData(null);
+    assert.equal(result.data.length, 0);
+  });
+}
+
+/**
+ * ResourceEnrichment テストのみ実行
+ */
+function runResourceEnrichmentTests() {
+  Logger.log("🧪 Running ResourceEnrichment Tests...\n");
+  TestRunner.reset();
+  testResourceEnrichment();
+  TestRunner.summary();
+}
+
 // ========================================
 // メインテスト実行関数
 // ========================================
@@ -1168,6 +1338,7 @@ function runAllTests() {
   testScheduleParser();
   testCoworkerOJTManager();
   testSheetFormatter();
+  testResourceEnrichment();
 
   // サマリーを表示
   TestRunner.summary();

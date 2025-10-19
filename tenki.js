@@ -2171,6 +2171,347 @@ const SheetFormatter = {
 };
 
 // ========================================
+// リソース情報付加モジュール
+// ========================================
+/**
+ * ResourceEnrichment - リソース情報の取得と付加
+ *
+ * 【責務】
+ * - リソースシートからの情報取得
+ * - カスタムプロジェクトデータの取得
+ * - シフトデータへのリソース情報付加
+ * - リソースマップの構築と管理
+ *
+ * 【主要メソッド】
+ * - enrichWithResourceData: リソース情報を付加
+ * - buildResourceMap: リソースマップ構築
+ * - enrichShiftItem: シフトアイテム拡張
+ * - getProjectBaseName: プロジェクトベース名取得
+ */
+const ResourceEnrichment = {
+  /**
+   * シフトデータにリソース情報を付加
+   * @param {Array} shiftData - シフトデータ配列
+   * @param {Object|null} cache - キャッシュデータ（オプション）
+   * @returns {Object} {data: 拡張されたデータ, errors: エラーリスト}
+   */
+  enrichWithResourceData(shiftData, cache = null) {
+    if (cache) {
+      return this._enrichWithResourceDataFromCache(shiftData, cache);
+    }
+
+    const resourceResult = DataAccess.getResourceData();
+    const resourceMap = this.buildResourceMap(
+      resourceResult.data,
+      resourceResult.hoursMap,
+      resourceResult.scheduleMap
+    );
+    const errors = [];
+
+    const result = [];
+    for (const item of shiftData) {
+      // 座学の特別処理
+      if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
+        result.push({
+          date: item.date,
+          projectName: item.projectName,
+          content: CONFIG.DEFAULT_CONTENTS.ZAKUGAKU,
+          venue: CONFIG.DEFAULT_VENUES.ZAKUGAKU,
+          hours: "",
+          hasResourceData: true,
+        });
+        continue;
+      }
+
+      // リソースシートから情報を取得
+      const resourceInfo = resourceMap[item.projectName];
+      if (resourceInfo && resourceInfo.length > 0) {
+        result.push(this.enrichShiftItem(item, resourceMap));
+        continue;
+      }
+
+      // 個別案件設定から情報を取得
+      const customProject = DataAccess.getCustomProjectData(item.projectName, item.date);
+      if (customProject) {
+        result.push({
+          date: item.date,
+          projectName: customProject.projectName,
+          venue: customProject.venue,
+          content: customProject.content,
+          hours: customProject.hours,
+          coworkers: customProject.staff,
+          hasResourceData: true,
+        });
+        continue;
+      }
+
+      // 情報が見つからない場合
+      errors.push(`${item.date}日: 案件「${item.projectName}」が見つかりません`);
+      result.push({
+        date: item.date,
+        projectName: item.projectName,
+        venue: "",
+        content: "",
+        hours: "",
+        hasResourceData: false,
+      });
+    }
+
+    return { data: result, errors };
+  },
+
+  /**
+   * リソースマップを構築
+   * @param {Array} resourceData - リソースデータ
+   * @param {Object} hoursMap - 稼働時間マップ
+   * @param {Object} scheduleMap - スケジュールマップ
+   * @returns {Object} リソースマップ
+   */
+  buildResourceMap(resourceData, hoursMap, scheduleMap) {
+    const resourceMap = {};
+
+    for (let i = 0; i < resourceData.length; i++) {
+      const rowNum = i + 2;
+      const projectName = resourceData[i][1];
+
+      if (projectName) {
+        if (!resourceMap[projectName]) {
+          resourceMap[projectName] = [];
+        }
+
+        const hours = hoursMap[rowNum] || resourceData[i][4];
+        const scheduleText = scheduleMap[rowNum] || resourceData[i][5];
+
+        resourceMap[projectName].push({
+          hours,
+          scheduleText,
+        });
+      }
+    }
+
+    return resourceMap;
+  },
+
+  /**
+   * シフトアイテムを拡張
+   * @param {Object} item - シフトアイテム
+   * @param {Object} resourceMap - リソースマップ
+   * @returns {Object} 拡張されたシフトアイテム
+   */
+  enrichShiftItem(item, resourceMap) {
+    const resourceInfo = resourceMap[item.projectName];
+
+    if (!resourceInfo || resourceInfo.length === 0) {
+      return {
+        date: item.date,
+        projectName: item.projectName,
+        content: BusinessLogic._determineContent(item.projectName, ""),
+        venue: "",
+        hours: "",
+        hasResourceData: false,
+        errorMessage: `案件「${item.projectName}」がリソースに見つかりません`,
+      };
+    }
+
+    let venue = "";
+    let hours = "";
+    let scheduleText = "";
+
+    for (const resource of resourceInfo) {
+      const venues = ScheduleParser.extractVenues(resource.scheduleText, item.date);
+
+      if (venues.length > 0) {
+        venue = venues[0];
+        hours = ScheduleParser.extractWorkingHours(resource.hours, item.date);
+        scheduleText = resource.scheduleText;
+        break;
+      }
+    }
+
+    if (!venue && resourceInfo.length > 0) {
+      hours = ScheduleParser.extractWorkingHours(resourceInfo[0].hours, item.date);
+      scheduleText = resourceInfo[0].scheduleText;
+    }
+
+    if (!venue || venue.indexOf("軒先") !== -1 || venue.indexOf("ヘルパー") !== -1 || venue.indexOf("店頭") !== -1) {
+      venue = this.getProjectBaseName(item.projectName);
+    }
+
+    const content = BusinessLogic._determineContent(item.projectName, scheduleText, item.date);
+
+    // 内容が「店頭ヘルパー」または「軒先販売」の場合、店舗名称マスターを参照
+    if (content === CONFIG.DEFAULT_CONTENTS.TENTOU_HELPER ||
+        content === CONFIG.DEFAULT_CONTENTS.NOKISAKI) {
+      const officialName = StoreNameMaster.getOfficialName(item.projectName);
+      if (officialName) {
+        venue = officialName;
+      }
+    }
+
+    return {
+      date: item.date,
+      projectName: item.projectName,
+      content,
+      venue,
+      hours,
+      hasResourceData: true,
+    };
+  },
+
+  /**
+   * プロジェクトベース名を取得
+   * @param {string} projectName - プロジェクト名
+   * @returns {string} ベース名
+   */
+  getProjectBaseName(projectName) {
+    return StringUtils.extractBaseName(projectName);
+  },
+
+  /**
+   * カスタムプロジェクトデータを一度に読み込む
+   * @returns {Array} カスタムプロジェクトデータ配列
+   */
+  loadCustomProjectsData() {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const customSheet = ss.getSheetByName(CONFIG.CUSTOM_PROJECTS_SHEET_NAME);
+
+    if (!customSheet) return [];
+
+    const lastRow = customSheet.getLastRow();
+    if (lastRow < 2) return [];
+
+    const data = customSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+    return data.map(row => ({
+      projectName: row[0],
+      venue: row[1] || "",
+      content: row[2] || "",
+      hours: row[3] || "",
+      staff: row[4] || "",
+      condition: row[5] ? row[5].toString().trim() : ""
+    }));
+  },
+
+  /**
+   * マージセル処理の最適化
+   * @param {Object} sheet - シートオブジェクト
+   * @param {number} startRow - 開始行
+   * @param {number} col - 列番号
+   * @param {number} numRows - 行数
+   * @returns {Object} マージセルマップ
+   */
+  getMergedCellMap(sheet, startRow, col, numRows) {
+    const range = sheet.getRange(startRow, col, numRows, 1);
+    const values = range.getValues();
+    const map = {};
+
+    // 通常の値を先に登録
+    for (let i = 0; i < values.length; i++) {
+      if (values[i][0]) {
+        map[startRow + i] = values[i][0];
+      }
+    }
+
+    // マージされたセルを一括処理
+    const mergedRanges = range.getMergedRanges();
+    for (const mergedRange of mergedRanges) {
+      const value = mergedRange.getValue();
+      const rangeStartRow = mergedRange.getRow();
+      const numMergedRows = mergedRange.getNumRows();
+
+      // マージされた範囲の全行に値を設定
+      for (let k = 0; k < numMergedRows; k++) {
+        map[rangeStartRow + k] = value;
+      }
+    }
+
+    return map;
+  },
+
+  /**
+   * キャッシュからリソース情報を付加（内部メソッド）
+   * @private
+   */
+  _enrichWithResourceDataFromCache(shiftData, cache) {
+    const errors = [];
+    const result = [];
+
+    for (const item of shiftData) {
+      if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
+        result.push({
+          date: item.date,
+          projectName: item.projectName,
+          content: CONFIG.DEFAULT_CONTENTS.ZAKUGAKU,
+          venue: CONFIG.DEFAULT_VENUES.ZAKUGAKU,
+          hours: "",
+          hasResourceData: true,
+        });
+        continue;
+      }
+
+      const resourceInfo = cache.resourceMap[item.projectName];
+
+      if (resourceInfo && resourceInfo.length > 0) {
+        result.push(this.enrichShiftItem(item, cache.resourceMap));
+        continue;
+      }
+
+      // キャッシュからカスタムプロジェクトデータを取得（高速化）
+      const customProject = this._getCustomProjectFromCache(item.projectName, item.date, cache);
+      if (customProject) {
+        result.push({
+          date: item.date,
+          projectName: customProject.projectName,
+          venue: customProject.venue,
+          content: customProject.content,
+          hours: customProject.hours,
+          coworkers: customProject.staff,
+          hasResourceData: true,
+        });
+        continue;
+      }
+
+      errors.push(`${item.date}日: 案件「${item.projectName}」が見つかりません`);
+
+      result.push({
+        date: item.date,
+        projectName: item.projectName,
+        venue: "",
+        content: "",
+        hours: "",
+        hasResourceData: false,
+      });
+    }
+
+    return { data: result, errors };
+  },
+
+  /**
+   * キャッシュからカスタムプロジェクトデータを取得（内部メソッド）
+   * @private
+   */
+  _getCustomProjectFromCache(projectName, date, cache) {
+    const settings = SettingsManager.getSettings();
+    const isWeekendOrHoliday = Utils.isWeekendOrHoliday(date, settings.targetYear, settings.targetMonth);
+
+    let noConditionMatch = null;
+
+    for (const project of cache.customProjectsData) {
+      if (project.projectName === projectName) {
+        if (project.condition === "平日" && !isWeekendOrHoliday) {
+          return project;
+        } else if (project.condition === "土日祝" && isWeekendOrHoliday) {
+          return project;
+        } else if (!project.condition && !noConditionMatch) {
+          noConditionMatch = project;
+        }
+      }
+    }
+
+    return noConditionMatch;
+  }
+};
+
+// ========================================
 // エラーハンドリングモジュール
 // ========================================
 /**
@@ -3440,65 +3781,11 @@ const BusinessLogic = {
    * @param {Array} shiftData シフトデータ配列
    * @return {Object} {data: 拡張されたデータ, errors: エラーリスト}
    */
+  /**
+   * @deprecated ResourceEnrichment.enrichWithResourceData() を使用してください
+   */
   enrichWithResourceData(shiftData) {
-    const resourceResult = DataAccess.getResourceData();
-    const resourceMap = this._buildResourceMap(
-      resourceResult.data,
-      resourceResult.hoursMap,
-      resourceResult.scheduleMap
-    );
-    const errors = [];
-
-    const result = [];
-    for (const item of shiftData) {
-      // 座学の特別処理
-      if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
-        result.push({
-          date: item.date,
-          projectName: item.projectName,
-          content: CONFIG.DEFAULT_CONTENTS.ZAKUGAKU,
-          venue: CONFIG.DEFAULT_VENUES.ZAKUGAKU,
-          hours: "",
-          hasResourceData: true,
-        });
-        continue;
-      }
-
-      // リソースシートから情報を取得
-      const resourceInfo = resourceMap[item.projectName];
-      if (resourceInfo && resourceInfo.length > 0) {
-        result.push(this._enrichShiftItem(item, resourceMap));
-        continue;
-      }
-
-      // 個別案件設定から情報を取得
-      const customProject = DataAccess.getCustomProjectData(item.projectName, item.date);
-      if (customProject) {
-        result.push({
-          date: item.date,
-          projectName: customProject.projectName,
-          venue: customProject.venue,
-          content: customProject.content,
-          hours: customProject.hours,
-          coworkers: customProject.staff,
-          hasResourceData: true,
-        });
-        continue;
-      }
-
-      // 情報が見つからない場合
-      errors.push(`${item.date}日: 案件「${item.projectName}」が見つかりません`);
-      result.push({
-        date: item.date,
-        projectName: item.projectName,
-        venue: "",
-        content: "",
-        hours: "",
-        hasResourceData: false,
-      });
-    }
-
-    return { data: result, errors };
+    return ResourceEnrichment.enrichWithResourceData(shiftData);
   },
 
   processOJTData(name) {
@@ -3569,29 +3856,11 @@ const BusinessLogic = {
     return processedOJT;
   },
 
+  /**
+   * @deprecated ResourceEnrichment.buildResourceMap() を使用してください
+   */
   _buildResourceMap(resourceData, hoursMap, scheduleMap) {
-    const resourceMap = {};
-
-    for (let i = 0; i < resourceData.length; i++) {
-      const rowNum = i + 2;
-      const projectName = resourceData[i][1];
-
-      if (projectName) {
-        if (!resourceMap[projectName]) {
-          resourceMap[projectName] = [];
-        }
-
-        const hours = hoursMap[rowNum] || resourceData[i][4];
-        const scheduleText = scheduleMap[rowNum] || resourceData[i][5];
-
-        resourceMap[projectName].push({
-          hours,
-          scheduleText,
-        });
-      }
-    }
-
-    return resourceMap;
+    return ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
   },
 
   /**
@@ -3606,69 +3875,18 @@ const BusinessLogic = {
     return StoreNameMaster.getOfficialName(projectName);
   },
 
+  /**
+   * @deprecated ResourceEnrichment.enrichShiftItem() を使用してください
+   */
   _enrichShiftItem(item, resourceMap) {
-    const resourceInfo = resourceMap[item.projectName];
-
-    if (!resourceInfo || resourceInfo.length === 0) {
-      return {
-        date: item.date,
-        projectName: item.projectName,
-        content: this._determineContent(item.projectName, ""),
-        venue: "",
-        hours: "",
-        hasResourceData: false,
-        errorMessage: `案件「${item.projectName}」がリソースに見つかりません`,
-      };
-    }
-
-    let venue = "";
-    let hours = "";
-    let scheduleText = "";
-
-    for (const resource of resourceInfo) {
-      const venues = this._extractVenuesFromSchedule(resource.scheduleText, item.date);
-
-      if (venues.length > 0) {
-        venue = venues[0];
-        hours = this._extractWorkingHours(resource.hours, item.date);
-        scheduleText = resource.scheduleText;
-        break;
-      }
-    }
-
-    if (!venue && resourceInfo.length > 0) {
-      hours = this._extractWorkingHours(resourceInfo[0].hours, item.date);
-      scheduleText = resourceInfo[0].scheduleText;
-    }
-
-    if (!venue || venue.indexOf("軒先") !== -1 || venue.indexOf("ヘルパー") !== -1 || venue.indexOf("店頭") !== -1) {
-      venue = this._getProjectBaseName(item.projectName);
-    }
-
-    const content = this._determineContent(item.projectName, scheduleText, item.date);
-
-    // 内容が「店頭ヘルパー」または「軒先販売」の場合、店舗名称マスターを参照
-    if (content === CONFIG.DEFAULT_CONTENTS.TENTOU_HELPER ||
-        content === CONFIG.DEFAULT_CONTENTS.NOKISAKI) {
-      const officialName = StoreNameMaster.getOfficialName(item.projectName);
-      if (officialName) {
-        venue = officialName;
-      }
-    }
-
-    return {
-      date: item.date,
-      projectName: item.projectName,
-      content,
-      venue,
-      hours,
-      hasResourceData: true,
-    };
+    return ResourceEnrichment.enrichShiftItem(item, resourceMap);
   },
 
+  /**
+   * @deprecated ResourceEnrichment.getProjectBaseName() を使用してください
+   */
   _getProjectBaseName(projectName) {
-    // StringUtilsのextractBaseNameを使用
-    return StringUtils.extractBaseName(projectName);
+    return ResourceEnrichment.getProjectBaseName(projectName);
   },
 
   /**
@@ -5143,79 +5361,25 @@ const ShiftTransferController = {
   },
 
   // リソースマップ構築の最適化
+  /**
+   * @deprecated ResourceEnrichment.buildResourceMap() を使用してください
+   */
   _buildResourceMapOptimized(resourceData, hoursMap, scheduleMap) {
-    const resourceMap = {};
-
-    for (let i = 0; i < resourceData.length; i++) {
-      const rowNum = i + 2;
-      const projectName = resourceData[i][1];
-
-      if (projectName) {
-        if (!resourceMap[projectName]) {
-          resourceMap[projectName] = [];
-        }
-
-        const hours = hoursMap[rowNum] || resourceData[i][4];
-        const scheduleText = scheduleMap[rowNum] || resourceData[i][5];
-
-        resourceMap[projectName].push({
-          hours,
-          scheduleText,
-        });
-      }
-    }
-
-    return resourceMap;
+    return ResourceEnrichment.buildResourceMap(resourceData, hoursMap, scheduleMap);
   },
 
-  // マージセル処理の最適化
+  /**
+   * @deprecated ResourceEnrichment.getMergedCellMap() を使用してください
+   */
   _getMergedCellMapOptimized(sheet, startRow, col, numRows) {
-    const range = sheet.getRange(startRow, col, numRows, 1);
-    const values = range.getValues();
-    const map = {};
-
-    // 通常の値を先に登録
-    for (let i = 0; i < values.length; i++) {
-      if (values[i][0]) {
-        map[startRow + i] = values[i][0];
-      }
-    }
-
-    // マージされたセルを一括処理
-    const mergedRanges = range.getMergedRanges();
-    for (const mergedRange of mergedRanges) {
-      const value = mergedRange.getValue();
-      const rangeStartRow = mergedRange.getRow();
-      const numMergedRows = mergedRange.getNumRows();
-
-      // マージされた範囲の全行に値を設定
-      for (let k = 0; k < numMergedRows; k++) {
-        map[rangeStartRow + k] = value;
-      }
-    }
-
-    return map;
+    return ResourceEnrichment.getMergedCellMap(sheet, startRow, col, numRows);
   },
 
-  // カスタムプロジェクトデータを一度に読み込む
+  /**
+   * @deprecated ResourceEnrichment.loadCustomProjectsData() を使用してください
+   */
   _loadCustomProjectsData() {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const customSheet = ss.getSheetByName(CONFIG.CUSTOM_PROJECTS_SHEET_NAME);
-
-    if (!customSheet) return [];
-
-    const lastRow = customSheet.getLastRow();
-    if (lastRow < 2) return [];
-
-    const data = customSheet.getRange(2, 1, lastRow - 1, 6).getValues();
-    return data.map(row => ({
-      projectName: row[0],
-      venue: row[1] || "",
-      content: row[2] || "",
-      hours: row[3] || "",
-      staff: row[4] || "",
-      condition: row[5] ? row[5].toString().trim() : ""
-    }));
+    return ResourceEnrichment.loadCustomProjectsData();
   },
 
   // メンバー情報を一括取得
@@ -5356,58 +5520,11 @@ const ShiftTransferController = {
     return shiftData;
   },
 
+  /**
+   * @deprecated ResourceEnrichment.enrichWithResourceData() を使用してください
+   */
   _enrichWithResourceDataFromCache(shiftData, cache) {
-    const errors = [];
-    const result = [];
-
-    for (const item of shiftData) {
-      if (item.projectName === "座学") {
-        result.push({
-          date: item.date,
-          projectName: item.projectName,
-          content: "研修",
-          venue: "東船橋事務所",
-          hours: "",
-          hasResourceData: true,
-        });
-        continue;
-      }
-
-      const resourceInfo = cache.resourceMap[item.projectName];
-
-      if (resourceInfo && resourceInfo.length > 0) {
-        result.push(BusinessLogic._enrichShiftItem(item, cache.resourceMap));
-        continue;
-      }
-
-      // キャッシュからカスタムプロジェクトデータを取得（高速化）
-      const customProject = this._getCustomProjectFromCache(item.projectName, item.date, cache);
-      if (customProject) {
-        result.push({
-          date: item.date,
-          projectName: customProject.projectName,
-          venue: customProject.venue,
-          content: customProject.content,
-          hours: customProject.hours,
-          coworkers: customProject.staff,
-          hasResourceData: true,
-        });
-        continue;
-      }
-
-      errors.push(`${item.date}日: 案件「${item.projectName}」が見つかりません`);
-
-      result.push({
-        date: item.date,
-        projectName: item.projectName,
-        venue: "",
-        content: "",
-        hours: "",
-        hasResourceData: false,
-      });
-    }
-
-    return { data: result, errors };
+    return ResourceEnrichment.enrichWithResourceData(shiftData, cache);
   },
 
   /**
@@ -5431,26 +5548,11 @@ const ShiftTransferController = {
     return CoworkerOJTManager.addOJTTraineesInfo(shiftData, trainerName, cache);
   },
 
-  // キャッシュからカスタムプロジェクトデータを取得
+  /**
+   * @deprecated ResourceEnrichment._getCustomProjectFromCache() を使用してください (privateメソッドのため直接呼び出しは非推奨)
+   */
   _getCustomProjectFromCache(projectName, date, cache) {
-    const settings = SettingsManager.getSettings();
-    const isWeekendOrHoliday = Utils.isWeekendOrHoliday(date, settings.targetYear, settings.targetMonth);
-
-    let noConditionMatch = null;
-
-    for (const project of cache.customProjectsData) {
-      if (project.projectName === projectName) {
-        if (project.condition === "平日" && !isWeekendOrHoliday) {
-          return project;
-        } else if (project.condition === "土日祝" && isWeekendOrHoliday) {
-          return project;
-        } else if (!project.condition && !noConditionMatch) {
-          noConditionMatch = project;
-        }
-      }
-    }
-
-    return noConditionMatch;
+    return ResourceEnrichment._getCustomProjectFromCache(projectName, date, cache);
   },
 
   // スプレッドシートキャッシュを使用してシートを取得（高速化）

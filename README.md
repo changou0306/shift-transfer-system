@@ -144,8 +144,9 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
 - **ScheduleParser**: 12テスト（スケジュール解析、稼働時間抽出）
 - **CoworkerOJTManager**: 15テスト（同僚情報、OJT訓練生、トレーナー検索）
 - **SheetFormatter**: 22テスト（シート整形、データ転記、システムメッセージ）
+- **ResourceEnrichment**: 18テスト（リソースマップ、シフトアイテム拡張、座学処理）
 
-合計: **109テスト**
+合計: **127テスト**
 
 ## 開発履歴
 
@@ -190,6 +191,13 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
   - キャッシュ対応の統合実装：通常版とキャッシュ版を単一インターフェースに統合
   - PersonalSheetManagerとShiftTransferControllerの10メソッドを委譲化（@deprecated追加）
   - テスト追加：22テストケース追加（合計109テスト、+25.3%）
+- **v5.5**: Phase 3eリファクタリング（リソース情報拡張モジュール）
+  - ResourceEnrichmentモジュール抽出：リソース情報付加とデータ拡張の独立化（340行）
+  - 6つの公開メソッド実装：enrichWithResourceData、buildResourceMap、enrichShiftItem、getProjectBaseName、loadCustomProjectsData、getMergedCellMap
+  - リソースマップ構築の統合：通常版と最適化版を単一インターフェースに統合
+  - 座学・カスタムプロジェクト処理の集約：特別処理ロジックの一元管理
+  - BusinessLogicとShiftTransferControllerの9メソッドを委譲化（@deprecated追加）
+  - テスト追加：18テストケース追加（合計127テスト、+16.5%）
 
 ## ライセンス
 
