@@ -1985,6 +1985,12 @@ const SheetFormatter = {
 
     const headerRange = sheet.getRange(2, 1, 8, 1);
     headerRange.setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle");
+
+    // 注意書きを追加（A11セル）
+    sheet.getRange(11, 1)
+      .setValue("※原則、稼働時間の30分前には現場に着くよう、お願いいたします。")
+      .setFontSize(10)
+      .setFontColor("#FF0000");
   },
 
   /**
