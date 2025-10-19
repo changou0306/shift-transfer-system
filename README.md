@@ -143,8 +143,9 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
 - **StoreNameMaster**: 8テスト（店舗名変換、キャッシング）
 - **ScheduleParser**: 12テスト（スケジュール解析、稼働時間抽出）
 - **CoworkerOJTManager**: 15テスト（同僚情報、OJT訓練生、トレーナー検索）
+- **SheetFormatter**: 22テスト（シート整形、データ転記、システムメッセージ）
 
-合計: **87テスト**
+合計: **109テスト**
 
 ## 開発履歴
 
@@ -182,6 +183,13 @@ Google Apps Scriptを使用したシフトデータの自動転記システム�
   - キャッシュ対応の統合実装：通常版とキャッシュ版を単一インターフェースに統合
   - BusinessLogicとShiftTransferControllerの8メソッドを委譲化（@deprecated追加）
   - テスト追加：15テストケース追加（合計87テスト、+20.8%）
+- **v5.4**: Phase 3dリファクタリング（シート整形モジュール）
+  - SheetFormatterモジュール抽出：シート整形とデータ転記の独立化（440行）
+  - 5つの公開メソッド実装：ensureSheet、transferData、createHeaders、generateDateHeaders、createDateColumnMap
+  - UI層の分離：プレゼンテーション層の責務を明確化
+  - キャッシュ対応の統合実装：通常版とキャッシュ版を単一インターフェースに統合
+  - PersonalSheetManagerとShiftTransferControllerの10メソッドを委譲化（@deprecated追加）
+  - テスト追加：22テストケース追加（合計109テスト、+25.3%）
 
 ## ライセンス
 

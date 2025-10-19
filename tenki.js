@@ -1731,6 +1731,446 @@ const CoworkerOJTManager = {
 };
 
 // ========================================
+// シート整形モジュール
+// ========================================
+/**
+ * SheetFormatter - 個人シートの整形とデータ転記
+ *
+ * 【責務】
+ * - シートの作成と初期化
+ * - ヘッダー・日付行の生成
+ * - データの転記と書き込み
+ * - 既存データの保存と復元
+ * - シートの装飾（色、罫線）
+ *
+ * 【主要メソッド】
+ * - ensureSheet: シートの確保と初期化
+ * - transferData: データ転記
+ * - createHeaders: ヘッダー作成
+ * - generateDateHeaders: 日付ヘッダー生成
+ */
+const SheetFormatter = {
+  /**
+   * シートを確保して初期化
+   * @param {string} sheetId - スプレッドシートID
+   * @param {string} targetSheetName - シート名
+   * @param {string} selectedName - 選択された名前
+   * @param {Object|null} cache - キャッシュデータ（オプション）
+   * @returns {Object} シートオブジェクト
+   */
+  ensureSheet(sheetId, targetSheetName, selectedName, cache = null) {
+    const personalSpreadsheet = SpreadsheetApp.openById(sheetId);
+    let personalSheet = personalSpreadsheet.getSheetByName(targetSheetName);
+
+    if (!personalSheet) {
+      personalSheet = personalSpreadsheet.insertSheet(targetSheetName);
+      this.createHeaders(personalSheet, selectedName);
+      this.generateDateHeaders(personalSheet);
+    } else {
+      personalSheet.getRange(3, 1).setValue(selectedName).setFontWeight("bold");
+      // 日付ヘッダーのチェックをスキップ（既存シートは存在すると仮定）
+    }
+
+    personalSheet.setFrozenRows(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK);
+    personalSheet.setFrozenColumns(1);
+
+    return personalSheet;
+  },
+
+  /**
+   * データを転記
+   * @param {Object} sheet - シートオブジェクト
+   * @param {Array} data - 転記するデータ
+   * @param {Object|null} cache - キャッシュデータ（オプション）
+   * @returns {number} 転記件数
+   */
+  transferData(sheet, data, cache = null) {
+    const dateColumnMap = this.createDateColumnMap(sheet);
+    const settings = SettingsManager.getSettings();
+    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
+
+    const existingData = cache ?
+      this._saveExistingDataFast(sheet, dateColumnMap, data, daysInMonth) :
+      this._saveExistingData(sheet, dateColumnMap, data);
+
+    // データを日付順にソート
+    data.sort((a, b) => a.date - b.date);
+
+    // 書き込むデータを行列形式で準備
+    const projectRow = new Array(daysInMonth).fill("");
+    const venueRow = new Array(daysInMonth).fill("");
+    const contentRow = new Array(daysInMonth).fill("");
+    const hoursRow = new Array(daysInMonth).fill("");
+    const staffRow = new Array(daysInMonth).fill("");
+    const notesRow = new Array(daysInMonth).fill("");
+    const backgrounds = [];
+    for (let i = 0; i < 6; i++) {
+      backgrounds.push(new Array(daysInMonth).fill("#FFFFFF"));
+    }
+
+    let transferCount = 0;
+
+    // データを配列に格納
+    for (const item of data) {
+      const colIndex = dateColumnMap[String(item.date)];
+
+      if (!colIndex) continue;
+
+      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
+
+      if (item.projectName) {
+        projectRow[arrayIndex] = item.projectName;
+
+        // 色設定
+        const projectNameLower = item.projectName.toLowerCase().trim();
+        const color = CONFIG.PROJECT_COLORS[projectNameLower];
+        if (color) {
+          for (let j = 0; j < 5; j++) {
+            backgrounds[j][arrayIndex] = color;
+          }
+        }
+      }
+
+      if (item.hasResourceData && item.venue) {
+        venueRow[arrayIndex] = item.venue;
+      }
+
+      if (item.content) {
+        contentRow[arrayIndex] = item.content;
+      }
+
+      // 稼働時間の処理（手動入力を優先）
+      const existingHours = existingData.hours[item.date];
+      if (existingHours) {
+        // 手動入力がある場合は保持
+        hoursRow[arrayIndex] = existingHours;
+      } else if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
+        // 座学で手動入力がない場合は空欄にして「要時間確認」メッセージ
+        hoursRow[arrayIndex] = "";
+        notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION;
+      } else if (item.hasResourceData && item.hours) {
+        // リソースシートからの稼働時間を使用
+        hoursRow[arrayIndex] = item.hours;
+      }
+
+      if (item.coworkers) {
+        staffRow[arrayIndex] = item.coworkers;
+      }
+
+      // OJT処理（補足事項の設定）
+      if (item.isOJT) {
+        if (item.needsTrainerConfirmation) {
+          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION;
+        } else {
+          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.OJT_LABEL;
+        }
+      }
+
+      transferCount++;
+    }
+
+    // 手動コメントを復元
+    for (const day in existingData.notes) {
+      const colIndex = dateColumnMap[day];
+      if (!colIndex) continue;
+
+      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
+      const note = existingData.notes[day];
+
+      // システムメッセージが設定されていない場合のみ復元
+      if (!notesRow[arrayIndex] && !this.isSystemMessage(note)) {
+        notesRow[arrayIndex] = note;
+      }
+    }
+
+    // 一括書き込み
+    const dataToWrite = [
+      projectRow,
+      venueRow,
+      contentRow,
+      hoursRow,
+      staffRow,
+      notesRow
+    ];
+
+    sheet.getRange(
+      CONFIG.PERSONAL_ROWS.PROJECT,
+      CONFIG.PERSONAL_ROWS.START_COL,
+      6,
+      daysInMonth
+    ).setValues(dataToWrite).setBackgrounds(backgrounds);
+
+    return transferCount;
+  },
+
+  /**
+   * ヘッダーを作成
+   * @param {Object} sheet - シートオブジェクト
+   * @param {string} selectedName - 選択された名前
+   */
+  createHeaders(sheet, selectedName) {
+    const settings = SettingsManager.getSettings();
+    sheet.setColumnWidth(1, 150);
+
+    sheet.getRange(2, 1)
+      .setValue(`${settings.targetYear}年${settings.targetMonth}月`)
+      .setFontWeight("bold")
+      .setFontSize(12);
+
+    sheet.getRange(3, 1).setValue(selectedName).setFontWeight("bold");
+
+    const headerCol = CONFIG.PERSONAL_ROWS.START_COL - 1;
+    const headers = ["案件名", "会場", "内容", "稼働時間", "同時入店スタッフ"];
+
+    for (let i = 0; i < headers.length; i++) {
+      sheet.getRange(CONFIG.PERSONAL_ROWS.PROJECT + i, headerCol).setValue(headers[i]);
+    }
+
+    sheet.getRange(9, 1).setValue("補足事項");
+
+    const headerRange = sheet.getRange(2, 1, 8, 1);
+    headerRange.setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle");
+  },
+
+  /**
+   * 日付ヘッダーを生成
+   * @param {Object} sheet - シートオブジェクト
+   */
+  generateDateHeaders(sheet) {
+    const settings = SettingsManager.getSettings();
+    const { dates, daysOfWeek } = DateUtils.generateDateArrays(settings.targetYear, settings.targetMonth);
+    const daysInMonth = dates.length;
+
+    sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([dates]);
+    sheet.getRange(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([daysOfWeek]);
+
+    for (let i = 0; i < daysInMonth; i++) {
+      sheet.setColumnWidth(CONFIG.PERSONAL_ROWS.START_COL + i, 100);
+    }
+
+    const dataRange = sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, CONFIG.PERSONAL_ROWS.START_COL, 8, daysInMonth);
+    dataRange.setHorizontalAlignment("center").setVerticalAlignment("middle").setFontWeight("bold");
+
+    const venueRange = sheet.getRange(CONFIG.PERSONAL_ROWS.VENUE, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
+    venueRange.setWrap(true);
+
+    const notesRange = sheet.getRange(CONFIG.PERSONAL_ROWS.NOTES, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
+    notesRange.setWrap(true);
+
+    this._applyWeekendColors(sheet, daysInMonth, daysOfWeek);
+    this._applyBorders(sheet, daysInMonth);
+  },
+
+  /**
+   * 日付列マップを作成
+   * @param {Object} sheet - シートオブジェクト
+   * @returns {Object} 日付→列番号のマップ
+   */
+  createDateColumnMap(sheet) {
+    const settings = SettingsManager.getSettings();
+    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
+
+    const dateHeaders = sheet.getRange(
+      CONFIG.PERSONAL_ROWS.DATE,
+      CONFIG.PERSONAL_ROWS.START_COL,
+      1,
+      daysInMonth
+    ).getValues()[0];
+
+    const map = {};
+    for (let i = 0; i < dateHeaders.length; i++) {
+      const dateValue = dateHeaders[i];
+      if (dateValue) {
+        const day = dateValue instanceof Date ? dateValue.getDate() : String(dateValue);
+        map[String(day)] = CONFIG.PERSONAL_ROWS.START_COL + i;
+      }
+    }
+
+    return map;
+  },
+
+  /**
+   * システムメッセージかどうか判定
+   * @param {string} message - メッセージ
+   * @returns {boolean} システムメッセージの場合true
+   */
+  isSystemMessage(message) {
+    if (!message) return false;
+    const trimmed = message.trim();
+    return trimmed === CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION ||
+           trimmed === CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION ||
+           trimmed === CONFIG.SYSTEM_MESSAGES.OJT_LABEL;
+  },
+
+  /**
+   * 週末の色を適用（内部メソッド）
+   * @private
+   */
+  _applyWeekendColors(sheet, daysInMonth, daysOfWeek) {
+    const settings = SettingsManager.getSettings();
+
+    for (let i = 0; i < daysInMonth; i++) {
+      const col = CONFIG.PERSONAL_ROWS.START_COL + i;
+      const day = i + 1;
+      const isHoliday = DateUtils.isHoliday(day, settings.targetMonth);
+      const cellRange = sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, col, 2, 1);
+
+      if (daysOfWeek[i] === "土") {
+        cellRange.setBackground(CONFIG.COLORS.SATURDAY_BG)
+                 .setFontColor(CONFIG.COLORS.HOLIDAY_TEXT);
+      } else if (daysOfWeek[i] === "日" || isHoliday) {
+        cellRange.setBackground(CONFIG.COLORS.SUNDAY_HOLIDAY_BG)
+                 .setFontColor(CONFIG.COLORS.HOLIDAY_TEXT);
+      }
+    }
+  },
+
+  /**
+   * 罫線を適用（内部メソッド）
+   * @private
+   */
+  _applyBorders(sheet, daysInMonth) {
+    const shiftRange = sheet.getRange(
+      CONFIG.PERSONAL_ROWS.DATE,
+      1,
+      8,
+      CONFIG.PERSONAL_ROWS.START_COL + daysInMonth - 1
+    );
+
+    shiftRange.setBorder(
+      true, true, true, true, true, true,
+      "#000000",
+      SpreadsheetApp.BorderStyle.SOLID
+    );
+  },
+
+  /**
+   * 既存データを保存（内部メソッド）
+   * @private
+   */
+  _saveExistingData(sheet, dateColumnMap, newData) {
+    const existingNotes = {};
+    const existingHours = {};
+    const settings = SettingsManager.getSettings();
+    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
+
+    const newDataMap = {};
+    for (const item of newData) {
+      newDataMap[item.date] = {
+        projectName: item.projectName,
+        hours: item.hours
+      };
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const colIndex = dateColumnMap[String(day)];
+      if (!colIndex) continue;
+
+      // 補足事項を保存
+      const note = sheet.getRange(CONFIG.PERSONAL_ROWS.NOTES, colIndex).getValue();
+      if (note) {
+        existingNotes[day] = note;
+      }
+
+      // 稼働時間を保存（手動入力を保持）
+      const existingHour = sheet.getRange(CONFIG.PERSONAL_ROWS.HOURS, colIndex).getValue();
+      const newDataForDay = newDataMap[day];
+
+      if (existingHour && typeof existingHour === 'string' && existingHour.trim() !== '') {
+        // 既存の稼働時間がある場合
+        if (newDataForDay) {
+          const newHour = newDataForDay.hours || '';
+
+          // 手動入力の判定：
+          // 1. 座学は常に保持（座学の稼働時間は手動入力）
+          // 2. 新しいデータの稼働時間と異なる場合は手動入力と判断して保持
+          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
+              existingHour !== newHour) {
+            existingHours[day] = existingHour;
+          }
+        } else {
+          // 新データがない場合も保持
+          existingHours[day] = existingHour;
+        }
+      }
+    }
+
+    return {
+      notes: existingNotes,
+      hours: existingHours
+    };
+  },
+
+  /**
+   * 既存データを高速保存（内部メソッド）
+   * キャッシュ版で一括読み込みを使用
+   * @private
+   */
+  _saveExistingDataFast(sheet, dateColumnMap, newData, daysInMonth) {
+    const existingNotes = {};
+    const existingHours = {};
+
+    const newDataMap = {};
+    for (const item of newData) {
+      newDataMap[item.date] = {
+        projectName: item.projectName,
+        hours: item.hours
+      };
+    }
+
+    // 一括読み込み
+    const notesRange = sheet.getRange(
+      CONFIG.PERSONAL_ROWS.NOTES,
+      CONFIG.PERSONAL_ROWS.START_COL,
+      1,
+      daysInMonth
+    ).getValues()[0];
+
+    const hoursRange = sheet.getRange(
+      CONFIG.PERSONAL_ROWS.HOURS,
+      CONFIG.PERSONAL_ROWS.START_COL,
+      1,
+      daysInMonth
+    ).getValues()[0];
+
+    for (let day = 1; day <= daysInMonth; day++) {
+      const colIndex = dateColumnMap[String(day)];
+      if (!colIndex) continue;
+
+      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
+
+      // 補足事項を保存
+      const note = notesRange[arrayIndex];
+      if (note) {
+        existingNotes[day] = note;
+      }
+
+      // 稼働時間を保存
+      const existingHour = hoursRange[arrayIndex];
+      const newDataForDay = newDataMap[day];
+
+      if (existingHour && typeof existingHour === 'string' && existingHour.trim() !== '') {
+        if (newDataForDay) {
+          const newHour = newDataForDay.hours || '';
+
+          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
+              existingHour !== newHour) {
+            existingHours[day] = existingHour;
+          }
+        } else {
+          existingHours[day] = existingHour;
+        }
+      }
+    }
+
+    return {
+      notes: existingNotes,
+      hours: existingHours
+    };
+  }
+};
+
+// ========================================
 // エラーハンドリングモジュール
 // ========================================
 /**
@@ -3952,315 +4392,74 @@ const BusinessLogic = {
 // 個人シフトシート操作の最適化
 // ========================================
 const PersonalSheetManager = {
-  // 最適化版：シート確保
+  /**
+   * @deprecated SheetFormatter.ensureSheet() を使用してください
+   */
   ensureSheetOptimized(sheetId, targetSheetName, selectedName) {
-    const personalSpreadsheet = SpreadsheetApp.openById(sheetId);
-    let personalSheet = personalSpreadsheet.getSheetByName(targetSheetName);
-
-    if (!personalSheet) {
-      personalSheet = personalSpreadsheet.insertSheet(targetSheetName);
-      this._createHeaders(personalSheet, selectedName);
-      this._generateDateHeaders(personalSheet);
-    } else {
-      personalSheet.getRange(3, 1).setValue(selectedName).setFontWeight("bold");
-      // 日付ヘッダーのチェックをスキップ（既存シートは存在すると仮定）
-    }
-
-    personalSheet.setFrozenRows(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK);
-    personalSheet.setFrozenColumns(1);
-
-    return personalSheet;
+    return SheetFormatter.ensureSheet(sheetId, targetSheetName, selectedName);
   },
 
-  // 最適化版：データ転記（一括書き込み）
+  /**
+   * @deprecated SheetFormatter.transferData() を使用してください
+   */
   transferDataOptimized(sheet, data) {
-    const dateColumnMap = this._createDateColumnMap(sheet);
-    const existingData = this._saveExistingData(sheet, dateColumnMap, data);
-
-    // データを日付順にソート
-    data.sort((a, b) => a.date - b.date);
-
-    // 書き込むデータを行列形式で準備
-    const settings = SettingsManager.getSettings();
-    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
-
-    // 各行のデータ配列を準備
-    const projectRow = new Array(daysInMonth).fill("");
-    const venueRow = new Array(daysInMonth).fill("");
-    const contentRow = new Array(daysInMonth).fill("");
-    const hoursRow = new Array(daysInMonth).fill("");
-    const staffRow = new Array(daysInMonth).fill("");
-    const notesRow = new Array(daysInMonth).fill("");
-    const backgrounds = [];
-    for (let i = 0; i < 6; i++) {
-      backgrounds.push(new Array(daysInMonth).fill("#FFFFFF"));
-    }
-
-    let transferCount = 0;
-
-    // データを配列に格納
-    for (const item of data) {
-      const colIndex = dateColumnMap[String(item.date)];
-
-      if (!colIndex) continue;
-
-      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
-
-      if (item.projectName) {
-        projectRow[arrayIndex] = item.projectName;
-
-        // 色設定
-        const projectNameLower = item.projectName.toLowerCase().trim();
-        const color = CONFIG.PROJECT_COLORS[projectNameLower];
-        if (color) {
-          for (let j = 0; j < 5; j++) {
-            backgrounds[j][arrayIndex] = color;
-          }
-        }
-      }
-
-      if (item.hasResourceData && item.venue) {
-        venueRow[arrayIndex] = item.venue;
-      }
-
-      if (item.content) {
-        contentRow[arrayIndex] = item.content;
-      }
-
-      // 稼働時間の処理（手動入力を優先）
-      const existingHours = existingData.hours[item.date];
-      if (existingHours) {
-        // 手動入力がある場合は保持
-        hoursRow[arrayIndex] = existingHours;
-      } else if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
-        // 座学で手動入力がない場合は空欄にして「要時間確認」メッセージ
-        hoursRow[arrayIndex] = "";
-        notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION;
-      } else if (item.hasResourceData && item.hours) {
-        // リソースシートからの稼働時間を使用
-        hoursRow[arrayIndex] = item.hours;
-      }
-
-      if (item.coworkers) {
-        staffRow[arrayIndex] = item.coworkers;
-      }
-
-      // OJT処理（補足事項の設定）
-      if (item.isOJT) {
-        if (item.needsTrainerConfirmation) {
-          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION;
-        } else {
-          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.OJT_LABEL;
-        }
-      }
-
-      transferCount++;
-    }
-
-    // 手動コメントを復元
-    for (const day in existingData.notes) {
-      const colIndex = dateColumnMap[day];
-      if (!colIndex) continue;
-
-      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
-      const note = existingData.notes[day];
-
-      // システムメッセージが設定されていない場合のみ復元
-      if (!notesRow[arrayIndex] && !this._isSystemMessage(note)) {
-        notesRow[arrayIndex] = note;
-      }
-    }
-
-    // 一括書き込み
-    const dataToWrite = [
-      projectRow,
-      venueRow,
-      contentRow,
-      hoursRow,
-      staffRow,
-      notesRow
-    ];
-
-    sheet.getRange(
-      CONFIG.PERSONAL_ROWS.PROJECT,
-      CONFIG.PERSONAL_ROWS.START_COL,
-      6,
-      daysInMonth
-    ).setValues(dataToWrite).setBackgrounds(backgrounds);
-
-    return transferCount;
+    return SheetFormatter.transferData(sheet, data);
   },
 
-  // その他のメソッドは既存と同じ
+  /**
+   * @deprecated SheetFormatter.createHeaders() を使用してください
+   */
   _createHeaders(sheet, selectedName) {
-    const settings = SettingsManager.getSettings();
-    sheet.setColumnWidth(1, 150);
-
-    sheet.getRange(2, 1)
-      .setValue(`${settings.targetYear}年${settings.targetMonth}月`)
-      .setFontWeight("bold")
-      .setFontSize(12);
-
-    sheet.getRange(3, 1).setValue(selectedName).setFontWeight("bold");
-
-    const headerCol = CONFIG.PERSONAL_ROWS.START_COL - 1;
-    const headers = ["案件名", "会場", "内容", "稼働時間", "同時入店スタッフ"];
-
-    for (let i = 0; i < headers.length; i++) {
-      sheet.getRange(CONFIG.PERSONAL_ROWS.PROJECT + i, headerCol).setValue(headers[i]);
-    }
-
-    sheet.getRange(9, 1).setValue("補足事項");
-
-    const headerRange = sheet.getRange(2, 1, 8, 1);
-    headerRange.setFontWeight("bold").setHorizontalAlignment("center").setVerticalAlignment("middle");
+    return SheetFormatter.createHeaders(sheet, selectedName);
   },
 
+  /**
+   * @deprecated SheetFormatter.generateDateHeaders() を使用してください
+   */
   _generateDateHeaders(sheet) {
-    const settings = SettingsManager.getSettings();
-    const { dates, daysOfWeek } = DateUtils.generateDateArrays(settings.targetYear, settings.targetMonth);
-    const daysInMonth = dates.length;
-
-    sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([dates]);
-    sheet.getRange(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth).setValues([daysOfWeek]);
-
-    for (let i = 0; i < daysInMonth; i++) {
-      sheet.setColumnWidth(CONFIG.PERSONAL_ROWS.START_COL + i, 100);
-    }
-
-    const dataRange = sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, CONFIG.PERSONAL_ROWS.START_COL, 8, daysInMonth);
-    dataRange.setHorizontalAlignment("center").setVerticalAlignment("middle").setFontWeight("bold");
-
-    const venueRange = sheet.getRange(CONFIG.PERSONAL_ROWS.VENUE, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
-    venueRange.setWrap(true);
-
-    const notesRange = sheet.getRange(CONFIG.PERSONAL_ROWS.NOTES, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
-    notesRange.setWrap(true);
-
-    this._applyWeekendColors(sheet, daysInMonth, daysOfWeek);
-    this._applyBorders(sheet, daysInMonth);
+    return SheetFormatter.generateDateHeaders(sheet);
   },
 
+  /**
+   * @deprecated SheetFormatter._applyWeekendColors() を使用してください
+   */
   _applyWeekendColors(sheet, daysInMonth, daysOfWeek) {
-    const settings = SettingsManager.getSettings();
-
-    for (let i = 0; i < daysInMonth; i++) {
-      const col = CONFIG.PERSONAL_ROWS.START_COL + i;
-      const day = i + 1;
-      const isHoliday = this._checkHoliday(day, settings.targetMonth);
-      const cellRange = sheet.getRange(CONFIG.PERSONAL_ROWS.DATE, col, 2, 1);
-
-      if (daysOfWeek[i] === "土") {
-        cellRange.setBackground(CONFIG.COLORS.SATURDAY_BG)
-                 .setFontColor(CONFIG.COLORS.HOLIDAY_TEXT);
-      } else if (daysOfWeek[i] === "日" || isHoliday) {
-        cellRange.setBackground(CONFIG.COLORS.SUNDAY_HOLIDAY_BG)
-                 .setFontColor(CONFIG.COLORS.HOLIDAY_TEXT);
-      }
-    }
+    return SheetFormatter._applyWeekendColors(sheet, daysInMonth, daysOfWeek);
   },
 
+  /**
+   * @deprecated DateUtils.isHoliday() を直接使用してください
+   */
   _checkHoliday(day, month) {
     return DateUtils.isHoliday(day, month);
   },
 
+  /**
+   * @deprecated SheetFormatter._applyBorders() を使用してください
+   */
   _applyBorders(sheet, daysInMonth) {
-    const shiftRange = sheet.getRange(
-      CONFIG.PERSONAL_ROWS.DATE,
-      1,
-      8,
-      CONFIG.PERSONAL_ROWS.START_COL + daysInMonth - 1
-    );
-
-    shiftRange.setBorder(
-      true, true, true, true, true, true,
-      "#000000",
-      SpreadsheetApp.BorderStyle.SOLID
-    );
+    return SheetFormatter._applyBorders(sheet, daysInMonth);
   },
 
+  /**
+   * @deprecated SheetFormatter.createDateColumnMap() を使用してください
+   */
   _createDateColumnMap(sheet) {
-    const settings = SettingsManager.getSettings();
-    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
-
-    const dateHeaders = sheet.getRange(
-      CONFIG.PERSONAL_ROWS.DATE,
-      CONFIG.PERSONAL_ROWS.START_COL,
-      1,
-      daysInMonth
-    ).getValues()[0];
-
-    const map = {};
-    for (let i = 0; i < dateHeaders.length; i++) {
-      const dateValue = dateHeaders[i];
-      if (dateValue) {
-        const day = dateValue instanceof Date ? dateValue.getDate() : String(dateValue);
-        map[String(day)] = CONFIG.PERSONAL_ROWS.START_COL + i;
-      }
-    }
-
-    return map;
+    return SheetFormatter.createDateColumnMap(sheet);
   },
 
+  /**
+   * @deprecated SheetFormatter._saveExistingData() を使用してください
+   */
   _saveExistingData(sheet, dateColumnMap, newData) {
-    const existingNotes = {};
-    const existingHours = {};
-    const settings = SettingsManager.getSettings();
-    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
-
-    const newDataMap = {};
-    for (const item of newData) {
-      newDataMap[item.date] = {
-        projectName: item.projectName,
-        hours: item.hours
-      };
-    }
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const colIndex = dateColumnMap[String(day)];
-      if (!colIndex) continue;
-
-      // 補足事項を保存
-      const note = sheet.getRange(CONFIG.PERSONAL_ROWS.NOTES, colIndex).getValue();
-      if (note) {
-        existingNotes[day] = note;
-      }
-
-      // 稼働時間を保存（手動入力を保持）
-      const existingHour = sheet.getRange(CONFIG.PERSONAL_ROWS.HOURS, colIndex).getValue();
-      const newDataForDay = newDataMap[day];
-
-      if (existingHour && typeof existingHour === 'string' && existingHour.trim() !== '') {
-        // 既存の稼働時間がある場合
-        if (newDataForDay) {
-          const newHour = newDataForDay.hours || '';
-
-          // 手動入力の判定：
-          // 1. 座学は常に保持（座学の稼働時間は手動入力）
-          // 2. 新しいデータの稼働時間と異なる場合は手動入力と判断して保持
-          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
-              existingHour !== newHour) {
-            existingHours[day] = existingHour;
-          }
-        } else {
-          // 新データがない場合も保持
-          existingHours[day] = existingHour;
-        }
-      }
-    }
-
-    return {
-      notes: existingNotes,
-      hours: existingHours
-    };
+    return SheetFormatter._saveExistingData(sheet, dateColumnMap, newData);
   },
 
+  /**
+   * @deprecated SheetFormatter.isSystemMessage() を使用してください
+   */
   _isSystemMessage(message) {
-    if (!message) return false;
-    const trimmed = message.trim();
-    return trimmed === CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION ||
-           trimmed === CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION ||
-           trimmed === CONFIG.SYSTEM_MESSAGES.OJT_LABEL;
+    return SheetFormatter.isSystemMessage(message);
   },
 };
 
@@ -5255,216 +5454,29 @@ const ShiftTransferController = {
   },
 
   // スプレッドシートキャッシュを使用してシートを取得（高速化）
+  /**
+   * @deprecated SheetFormatter.ensureSheet() を使用してください
+   */
   _ensureSheetWithCache(sheetId, targetSheetName, selectedName, cache) {
     // スプレッドシートをキャッシュから取得または新規に開く
     if (!cache.spreadsheetCache[sheetId]) {
       cache.spreadsheetCache[sheetId] = SpreadsheetApp.openById(sheetId);
     }
-    const personalSpreadsheet = cache.spreadsheetCache[sheetId];
-
-    let personalSheet = personalSpreadsheet.getSheetByName(targetSheetName);
-
-    if (!personalSheet) {
-      personalSheet = personalSpreadsheet.insertSheet(targetSheetName);
-      PersonalSheetManager._createHeaders(personalSheet, selectedName);
-      PersonalSheetManager._generateDateHeaders(personalSheet);
-    } else {
-      personalSheet.getRange(3, 1).setValue(selectedName).setFontWeight("bold");
-    }
-
-    personalSheet.setFrozenRows(CONFIG.PERSONAL_ROWS.DAY_OF_WEEK);
-    personalSheet.setFrozenColumns(1);
-
-    return personalSheet;
+    return SheetFormatter.ensureSheet(sheetId, targetSheetName, selectedName, cache);
   },
 
-  // キャッシュを使用した高速データ転記
+  /**
+   * @deprecated SheetFormatter.transferData() を使用してください
+   */
   _transferDataOptimizedWithCache(sheet, data, cache) {
-    const settings = SettingsManager.getSettings();
-    const daysInMonth = new Date(settings.targetYear, settings.targetMonth, 0).getDate();
-
-    // 日付カラムマップを作成
-    const dateHeaders = sheet.getRange(
-      CONFIG.PERSONAL_ROWS.DATE,
-      CONFIG.PERSONAL_ROWS.START_COL,
-      1,
-      daysInMonth
-    ).getValues()[0];
-
-    const dateColumnMap = {};
-    for (let i = 0; i < dateHeaders.length; i++) {
-      const dateValue = dateHeaders[i];
-      if (dateValue) {
-        const day = dateValue instanceof Date ? dateValue.getDate() : String(dateValue);
-        dateColumnMap[String(day)] = CONFIG.PERSONAL_ROWS.START_COL + i;
-      }
-    }
-
-    // 既存の補足事項と稼働時間を一括取得（高速化）
-    const existingData = this._saveExistingDataFast(sheet, dateColumnMap, data, daysInMonth);
-
-    // データを日付順にソート
-    data.sort((a, b) => a.date - b.date);
-
-    // 各行のデータ配列を準備
-    const projectRow = new Array(daysInMonth).fill("");
-    const venueRow = new Array(daysInMonth).fill("");
-    const contentRow = new Array(daysInMonth).fill("");
-    const hoursRow = new Array(daysInMonth).fill("");
-    const staffRow = new Array(daysInMonth).fill("");
-    const notesRow = new Array(daysInMonth).fill("");
-    const backgrounds = [];
-    for (let i = 0; i < 6; i++) {
-      backgrounds.push(new Array(daysInMonth).fill("#FFFFFF"));
-    }
-
-    let transferCount = 0;
-
-    // データを配列に格納
-    for (const item of data) {
-      const colIndex = dateColumnMap[String(item.date)];
-
-      if (!colIndex) continue;
-
-      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
-
-      if (item.projectName) {
-        projectRow[arrayIndex] = item.projectName;
-
-        // 色設定
-        const projectNameLower = item.projectName.toLowerCase().trim();
-        const color = CONFIG.PROJECT_COLORS[projectNameLower];
-        if (color) {
-          for (let j = 0; j < 5; j++) {
-            backgrounds[j][arrayIndex] = color;
-          }
-        }
-      }
-
-      if (item.hasResourceData && item.venue) {
-        venueRow[arrayIndex] = item.venue;
-      }
-
-      if (item.content) {
-        contentRow[arrayIndex] = item.content;
-      }
-
-      // 稼働時間の処理（手動入力を優先）
-      const existingHours = existingData.hours[item.date];
-      if (existingHours) {
-        hoursRow[arrayIndex] = existingHours;
-      } else if (item.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU) {
-        hoursRow[arrayIndex] = "";
-        notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION;
-      } else if (item.hasResourceData && item.hours) {
-        hoursRow[arrayIndex] = item.hours;
-      }
-
-      if (item.coworkers) {
-        staffRow[arrayIndex] = item.coworkers;
-      }
-
-      // OJT処理（補足事項の設定）
-      if (item.isOJT) {
-        if (item.needsTrainerConfirmation) {
-          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION;
-        } else {
-          notesRow[arrayIndex] = CONFIG.SYSTEM_MESSAGES.OJT_LABEL;
-        }
-      }
-
-      transferCount++;
-    }
-
-    // 手動コメントを復元
-    for (const day in existingData.notes) {
-      const colIndex = dateColumnMap[day];
-      if (!colIndex) continue;
-
-      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
-      const note = existingData.notes[day];
-
-      // システムメッセージが設定されていない場合のみ復元
-      if (!notesRow[arrayIndex] && !PersonalSheetManager._isSystemMessage(note)) {
-        notesRow[arrayIndex] = note;
-      }
-    }
-
-    // 一括書き込み
-    const dataToWrite = [
-      projectRow,
-      venueRow,
-      contentRow,
-      hoursRow,
-      staffRow,
-      notesRow
-    ];
-
-    sheet.getRange(
-      CONFIG.PERSONAL_ROWS.PROJECT,
-      CONFIG.PERSONAL_ROWS.START_COL,
-      6,
-      daysInMonth
-    ).setValues(dataToWrite).setBackgrounds(backgrounds);
-
-    return transferCount;
+    return SheetFormatter.transferData(sheet, data, cache);
   },
 
-  // 既存データを高速に読み込む
+  /**
+   * @deprecated SheetFormatter._saveExistingDataFast() を使用してください
+   */
   _saveExistingDataFast(sheet, dateColumnMap, newData, daysInMonth) {
-    const existingNotes = {};
-    const existingHours = {};
-
-    // 新しいデータのマップを作成
-    const newDataMap = {};
-    for (const item of newData) {
-      newDataMap[item.date] = {
-        projectName: item.projectName,
-        hours: item.hours
-      };
-    }
-
-    // 補足事項と稼働時間を一括取得（高速化）
-    const notesRange = sheet.getRange(CONFIG.PERSONAL_ROWS.NOTES, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
-    const hoursRange = sheet.getRange(CONFIG.PERSONAL_ROWS.HOURS, CONFIG.PERSONAL_ROWS.START_COL, 1, daysInMonth);
-
-    const notesValues = notesRange.getValues()[0];
-    const hoursValues = hoursRange.getValues()[0];
-
-    for (let day = 1; day <= daysInMonth; day++) {
-      const colIndex = dateColumnMap[String(day)];
-      if (!colIndex) continue;
-
-      const arrayIndex = colIndex - CONFIG.PERSONAL_ROWS.START_COL;
-
-      // 補足事項を保存
-      const note = notesValues[arrayIndex];
-      if (note) {
-        existingNotes[day] = note;
-      }
-
-      // 稼働時間を保存（手動入力を保持）
-      const existingHour = hoursValues[arrayIndex];
-      const newDataForDay = newDataMap[day];
-
-      if (existingHour && typeof existingHour === 'string' && existingHour.trim() !== '') {
-        if (newDataForDay) {
-          const newHour = newDataForDay.hours || '';
-
-          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
-              existingHour !== newHour) {
-            existingHours[day] = existingHour;
-          }
-        } else {
-          existingHours[day] = existingHour;
-        }
-      }
-    }
-
-    return {
-      notes: existingNotes,
-      hours: existingHours
-    };
+    return SheetFormatter._saveExistingDataFast(sheet, dateColumnMap, newData, daysInMonth);
   },
 
   _updateLastUpdateDate(name) {

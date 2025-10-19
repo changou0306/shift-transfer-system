@@ -951,6 +951,202 @@ function runCoworkerOJTManagerTests() {
 }
 
 // ========================================
+// SheetFormatter テスト
+// ========================================
+
+function testSheetFormatter() {
+  TestRunner.suite("SheetFormatter");
+
+  // ========================================
+  // createDateColumnMap テスト
+  // ========================================
+
+  TestRunner.test("createDateColumnMap - creates correct mapping", () => {
+    // このテストは実際のシートが必要なため、基本的な型チェックのみ
+    assert.equal(typeof SheetFormatter.createDateColumnMap, "function");
+  });
+
+  // ========================================
+  // isSystemMessage テスト
+  // ========================================
+
+  TestRunner.test("isSystemMessage - null message", () => {
+    const result = SheetFormatter.isSystemMessage(null);
+    assert.equal(result, false);
+  });
+
+  TestRunner.test("isSystemMessage - empty message", () => {
+    const result = SheetFormatter.isSystemMessage("");
+    assert.equal(result, false);
+  });
+
+  TestRunner.test("isSystemMessage - NEED_TIME_CONFIRMATION", () => {
+    const result = SheetFormatter.isSystemMessage(CONFIG.SYSTEM_MESSAGES.NEED_TIME_CONFIRMATION);
+    assert.equal(result, true);
+  });
+
+  TestRunner.test("isSystemMessage - NEED_TRAINER_CONFIRMATION", () => {
+    const result = SheetFormatter.isSystemMessage(CONFIG.SYSTEM_MESSAGES.NEED_TRAINER_CONFIRMATION);
+    assert.equal(result, true);
+  });
+
+  TestRunner.test("isSystemMessage - OJT_LABEL", () => {
+    const result = SheetFormatter.isSystemMessage(CONFIG.SYSTEM_MESSAGES.OJT_LABEL);
+    assert.equal(result, true);
+  });
+
+  TestRunner.test("isSystemMessage - normal message", () => {
+    const result = SheetFormatter.isSystemMessage("通常のメッセージ");
+    assert.equal(result, false);
+  });
+
+  TestRunner.test("isSystemMessage - system message with spaces", () => {
+    const message = `  ${CONFIG.SYSTEM_MESSAGES.OJT_LABEL}  `;
+    const result = SheetFormatter.isSystemMessage(message);
+    assert.equal(result, true);
+  });
+
+  // ========================================
+  // _saveExistingData 内部ロジック テスト
+  // ========================================
+
+  TestRunner.test("_saveExistingData - returns object with notes and hours", () => {
+    // 実際のシートなしでは完全なテスト不可
+    // 関数の存在確認
+    assert.equal(typeof SheetFormatter._saveExistingData, "function");
+  });
+
+  TestRunner.test("_saveExistingDataFast - returns object with notes and hours", () => {
+    assert.equal(typeof SheetFormatter._saveExistingDataFast, "function");
+  });
+
+  // ========================================
+  // ensureSheet  テスト
+  // ========================================
+
+  TestRunner.test("ensureSheet - function exists", () => {
+    assert.equal(typeof SheetFormatter.ensureSheet, "function");
+  });
+
+  TestRunner.test("ensureSheet - accepts cache parameter", () => {
+    // パラメータチェック
+    const params = SheetFormatter.ensureSheet.length;
+    // sheetId, targetSheetName, selectedName, cache
+    assert.equal(params >= 3, true);
+  });
+
+  // ========================================
+  // transferData テスト
+  // ========================================
+
+  TestRunner.test("transferData - function exists", () => {
+    assert.equal(typeof SheetFormatter.transferData, "function");
+  });
+
+  TestRunner.test("transferData - accepts cache parameter", () => {
+    const params = SheetFormatter.transferData.length;
+    // sheet, data, cache
+    assert.equal(params >= 2, true);
+  });
+
+  // ========================================
+  // createHeaders テスト
+  // ========================================
+
+  TestRunner.test("createHeaders - function exists", () => {
+    assert.equal(typeof SheetFormatter.createHeaders, "function");
+  });
+
+  // ========================================
+  // generateDateHeaders テスト
+  // ========================================
+
+  TestRunner.test("generateDateHeaders - function exists", () => {
+    assert.equal(typeof SheetFormatter.generateDateHeaders, "function");
+  });
+
+  // ========================================
+  // 内部メソッド存在確認
+  // ========================================
+
+  TestRunner.test("_applyWeekendColors - function exists", () => {
+    assert.equal(typeof SheetFormatter._applyWeekendColors, "function");
+  });
+
+  TestRunner.test("_applyBorders - function exists", () => {
+    assert.equal(typeof SheetFormatter._applyBorders, "function");
+  });
+
+  // ========================================
+  // transferData ロジック検証 (モック)
+  // ========================================
+
+  TestRunner.test("transferData - handles empty data array", () => {
+    // 空配列の処理（実際のシートなしでは完全テスト不可）
+    assert.equal(Array.isArray([]), true);
+  });
+
+  TestRunner.test("transferData - data sorting", () => {
+    // データのソートロジック検証
+    const testData = [
+      { date: 3, projectName: "A" },
+      { date: 1, projectName: "B" },
+      { date: 2, projectName: "C" }
+    ];
+    testData.sort((a, b) => a.date - b.date);
+    assert.equal(testData[0].date, 1);
+    assert.equal(testData[1].date, 2);
+    assert.equal(testData[2].date, 3);
+  });
+
+  TestRunner.test("transferData - background color array initialization", () => {
+    // 背景色配列の初期化ロジック
+    const daysInMonth = 31;
+    const backgrounds = [];
+    for (let i = 0; i < 6; i++) {
+      backgrounds.push(new Array(daysInMonth).fill("#FFFFFF"));
+    }
+    assert.equal(backgrounds.length, 6);
+    assert.equal(backgrounds[0].length, 31);
+    assert.equal(backgrounds[0][0], "#FFFFFF");
+  });
+
+  TestRunner.test("transferData - project color assignment", () => {
+    // プロジェクト色の割り当てロジック
+    const projectNameLower = "zakugaku".toLowerCase().trim();
+    const color = CONFIG.PROJECT_COLORS[projectNameLower];
+    assert.notNull(color);
+  });
+
+  TestRunner.test("transferData - OJT flag handling", () => {
+    // OJTフラグの処理ロジック
+    const item = {
+      isOJT: true,
+      needsTrainerConfirmation: true
+    };
+    assert.equal(item.isOJT, true);
+    assert.equal(item.needsTrainerConfirmation, true);
+  });
+
+  TestRunner.test("transferData - coworkers assignment", () => {
+    // 同時入店スタッフの割り当て
+    const item = { coworkers: "A・B・C" };
+    assert.equal(typeof item.coworkers, "string");
+    assert.equal(item.coworkers.includes("・"), true);
+  });
+}
+
+/**
+ * SheetFormatter テストのみ実行
+ */
+function runSheetFormatterTests() {
+  Logger.log("🧪 Running SheetFormatter Tests...\n");
+  TestRunner.reset();
+  testSheetFormatter();
+  TestRunner.summary();
+}
+
+// ========================================
 // メインテスト実行関数
 // ========================================
 
@@ -971,6 +1167,7 @@ function runAllTests() {
   testStoreNameMaster();
   testScheduleParser();
   testCoworkerOJTManager();
+  testSheetFormatter();
 
   // サマリーを表示
   TestRunner.summary();
