@@ -109,6 +109,7 @@ const CONFIG = {
     KIBOU_YASUMI: "希望休",
     KOUKYUU: "公休",
     SANKAKU: "△",
+    YOUKAKUNIN: "※要確認",
   },
 
   // 会場デフォルト
@@ -1595,56 +1596,29 @@ const CoworkerOJTManager = {
       }
     }
 
+    // OJTの場合は常に統一形式で出力
+    // 理由: 同日に複数人のOJTがいる場合、誰がどの現場に行くか読み取れず、
+    //       実際とは違う場所が記載され、事故となる可能性があるため
     for (const ojtItem of ojtItems) {
+      // トレーナー検索ロジックは今後の改善のため保持
+      // ただし、出力は統一形式とする
       if (ojtItem.trainerInfo) {
-        const trainerProjectName = ojtItem.trainerInfo.projectName;
-        const resourceInfo = cache.resourceMap[trainerProjectName];
-
-        let hours = "";
-        let venue = "";
-        let scheduleText = "";
-
-        if (resourceInfo && resourceInfo.length > 0) {
-          hours = ScheduleParser.extractWorkingHours(resourceInfo[0].hours, ojtItem.date);
-          scheduleText = resourceInfo[0].scheduleText;
-
-          const venues = ScheduleParser.extractVenues(scheduleText, ojtItem.date);
-
-          if (venues.length > 0) {
-            venue = venues[0];
-          }
-
-          if (!venue || venue.indexOf("軒先") !== -1 || venue.indexOf("ヘルパー") !== -1 || venue.indexOf("店頭") !== -1) {
-            venue = BusinessLogic._getProjectBaseName(trainerProjectName);
-          }
-        }
-
-        const trainerNickname = cache.nicknameMap[ojtItem.trainerInfo.name] || ojtItem.trainerInfo.name;
-
-        processedOJT.push({
-          date: ojtItem.date,
-          projectName: trainerProjectName,
-          content: BusinessLogic._determineContent(trainerProjectName, scheduleText, ojtItem.date),
-          venue,
-          hours,
-          hasResourceData: true,
-          isOJT: true,
-          trainerName: ojtItem.trainerInfo.name,
-          coworkers: trainerNickname,
-        });
+        Logger.log(`[OJT処理] ${name} - ${ojtItem.date}日: トレーナー ${ojtItem.trainerInfo.name} を検出（統一形式で出力）`);
       } else {
-        processedOJT.push({
-          date: ojtItem.date,
-          projectName: "",
-          content: "",
-          venue: "",
-          hours: "",
-          hasResourceData: false,
-          isOJT: true,
-          trainerName: null,
-          needsTrainerConfirmation: true,
-        });
+        Logger.log(`[OJT処理] ${name} - ${ojtItem.date}日: トレーナー未検出（統一形式で出力）`);
       }
+
+      processedOJT.push({
+        date: ojtItem.date,
+        projectName: "※要確認",
+        content: "",
+        venue: "",
+        hours: "",
+        coworkers: "",
+        hasResourceData: false,
+        isOJT: true,
+        needsTrainerConfirmation: false,  // 補足事項に「OJT」のみ表示
+      });
     }
 
     return processedOJT;
@@ -2277,7 +2251,8 @@ const SheetFormatter = {
     const defaultSkipProjects = [
       CONFIG.SPECIAL_PROJECTS.KIBOU_YASUMI,  // "希望休"
       CONFIG.SPECIAL_PROJECTS.KOUKYUU,       // "公休"
-      CONFIG.SPECIAL_PROJECTS.SANKAKU        // "△"
+      CONFIG.SPECIAL_PROJECTS.SANKAKU,        // "△"
+      CONFIG.SPECIAL_PROJECTS.YOUKAKUNIN     // "※要確認"
     ];
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
