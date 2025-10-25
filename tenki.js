@@ -1806,6 +1806,12 @@ const CoworkerOJTManager = {
  */
 const SheetFormatter = {
   /**
+   * スキップ案件キャッシュ
+   * @private
+   */
+  _skipProjectsCache: null,
+
+  /**
    * シートを確保して初期化
    * @param {string} sheetId - スプレッドシートID
    * @param {string} targetSheetName - シート名
@@ -2123,6 +2129,9 @@ const SheetFormatter = {
       };
     }
 
+    // スキップ案件（稼働時間なし案件）リストを取得
+    const skipProjects = this._getProjectsWithoutHours();
+
     for (let day = 1; day <= daysInMonth; day++) {
       const colIndex = dateColumnMap[String(day)];
       if (!colIndex) continue;
@@ -2141,11 +2150,21 @@ const SheetFormatter = {
         // 既存の稼働時間がある場合
         if (newDataForDay) {
           const newHour = newDataForDay.hours || '';
+          const projectName = newDataForDay.projectName || '';
+
+          // スキップ案件（稼働時間なし案件）は稼働時間をクリア
+          if (skipProjects.indexOf(projectName) !== -1) {
+            // 稼働時間を保持しない（クリアする）
+            if (ConfigManager.isDebugMode()) {
+              Logger.log(`[稼働時間クリア] ${day}日: ${projectName} の稼働時間をクリア`);
+            }
+            continue;
+          }
 
           // 手動入力の判定：
           // 1. 座学は常に保持（座学の稼働時間は手動入力）
           // 2. 新しいデータの稼働時間と異なる場合は手動入力と判断して保持
-          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
+          if (projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
               existingHour !== newHour) {
             existingHours[day] = existingHour;
           }
@@ -2178,6 +2197,9 @@ const SheetFormatter = {
         hours: item.hours
       };
     }
+
+    // スキップ案件（稼働時間なし案件）リストを取得（キャッシュ版）
+    const skipProjects = this._getProjectsWithoutHoursOptimized();
 
     // 一括読み込み
     const notesRange = sheet.getRange(
@@ -2213,8 +2235,17 @@ const SheetFormatter = {
       if (existingHour && typeof existingHour === 'string' && existingHour.trim() !== '') {
         if (newDataForDay) {
           const newHour = newDataForDay.hours || '';
+          const projectName = newDataForDay.projectName || '';
 
-          if (newDataForDay.projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
+          // スキップ案件は稼働時間をクリア
+          if (skipProjects.indexOf(projectName) !== -1) {
+            if (ConfigManager.isDebugMode()) {
+              Logger.log(`[稼働時間クリア・高速版] ${day}日: ${projectName} の稼働時間をクリア`);
+            }
+            continue;
+          }
+
+          if (projectName === CONFIG.SPECIAL_PROJECTS.ZAKUGAKU ||
               existingHour !== newHour) {
             existingHours[day] = existingHour;
           }
@@ -2228,6 +2259,103 @@ const SheetFormatter = {
       notes: existingNotes,
       hours: existingHours
     };
+  },
+
+  /**
+   * 稼働時間をクリアすべき案件リストを取得（ハイブリッド方式）
+   *
+   * 【動作仕様】
+   * 1. デフォルトのスキップ案件（希望休・公休・△）は常に含める
+   * 2. 個別案件設定シートから稼働時間が空欄の案件を追加
+   * 3. エラー時はデフォルト案件のみを返す
+   *
+   * @private
+   * @returns {Array<string>} 稼働時間なし案件名の配列
+   */
+  _getProjectsWithoutHours() {
+    // デフォルトのスキップ案件（フォールバック）
+    const defaultSkipProjects = [
+      CONFIG.SPECIAL_PROJECTS.KIBOU_YASUMI,  // "希望休"
+      CONFIG.SPECIAL_PROJECTS.KOUKYUU,       // "公休"
+      CONFIG.SPECIAL_PROJECTS.SANKAKU        // "△"
+    ];
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const customSheet = ss.getSheetByName(CONFIG.CUSTOM_PROJECTS_SHEET_NAME);
+
+    if (!customSheet) {
+      Logger.log('[稼働時間クリア] 個別案件設定シートが見つかりません。デフォルト案件を使用します。');
+      return defaultSkipProjects;
+    }
+
+    const lastRow = customSheet.getLastRow();
+    if (lastRow < 2) {
+      Logger.log('[稼働時間クリア] 個別案件設定シートにデータがありません。デフォルト案件を使用します。');
+      return defaultSkipProjects;
+    }
+
+    try {
+      const data = customSheet.getRange(2, 1, lastRow - 1, 4).getValues();
+      const skipProjects = new Set(defaultSkipProjects);  // デフォルトを含める
+
+      for (let i = 0; i < data.length; i++) {
+        const projectName = data[i][0];  // A列: 案件名
+        const hours = data[i][3];        // D列: 稼働時間
+
+        // 案件名が設定されており、稼働時間が空欄の場合
+        if (projectName && projectName.toString().trim() !== '' &&
+            (!hours || hours.toString().trim() === '')) {
+          skipProjects.add(projectName.toString().trim());
+
+          if (ConfigManager.isDebugMode()) {
+            Logger.log(`[稼働時間クリア] スキップ案件に追加: ${projectName}`);
+          }
+        }
+      }
+
+      const result = Array.from(skipProjects);
+      Logger.log(`[稼働時間クリア] スキップ案件リスト (${result.length}件): ${result.join(', ')}`);
+      return result;
+
+    } catch (error) {
+      Logger.log(`[稼働時間クリア] スキップ案件取得エラー: ${error.message}`);
+      return defaultSkipProjects;
+    }
+  },
+
+  /**
+   * 稼働時間をクリアすべき案件リストを取得（キャッシュ版）
+   *
+   * 高速化のため、一度取得した結果をキャッシュします。
+   * 個別案件設定シートを更新した場合は clearSkipProjectsCache() を呼び出してください。
+   *
+   * @private
+   * @returns {Array<string>} 稼働時間なし案件名の配列
+   */
+  _getProjectsWithoutHoursOptimized() {
+    // キャッシュがあれば返す
+    if (this._skipProjectsCache !== null) {
+      if (ConfigManager.isDebugMode()) {
+        Logger.log('[稼働時間クリア] キャッシュから取得');
+      }
+      return this._skipProjectsCache;
+    }
+
+    // キャッシュがなければ取得してキャッシュ
+    this._skipProjectsCache = this._getProjectsWithoutHours();
+    return this._skipProjectsCache;
+  },
+
+  /**
+   * スキップ案件キャッシュをクリア
+   *
+   * 個別案件設定シートを更新した後に呼び出してください。
+   *
+   * @public
+   */
+  clearSkipProjectsCache() {
+    this._skipProjectsCache = null;
+    Logger.log('[稼働時間クリア] キャッシュをクリアしました');
   }
 };
 
@@ -5431,6 +5559,9 @@ const ShiftTransferController = {
     // スプレッドシートオブジェクトのキャッシュ
     const spreadsheetCache = {};
 
+    // スキップ案件キャッシュをクリア
+    SheetFormatter.clearSkipProjectsCache();
+
     return {
       sourceId,
       dateHeaders,
@@ -5914,4 +6045,20 @@ function updateMasterSheet() {
  */
 function initializeMasterSheet() {
   MasterSheetManager.initializeMasterSheet();
+}
+
+/**
+ * スキップ案件リストを表示（デバッグ用）
+ *
+ * @function showSkipProjects
+ * @returns {void}
+ */
+function showSkipProjects() {
+  const skipProjects = SheetFormatter._getProjectsWithoutHours();
+
+  const message = `稼働時間をクリアする案件リスト：\n\n` +
+    skipProjects.map((p, i) => `${i + 1}. ${p}`).join('\n') +
+    `\n\n合計: ${skipProjects.length}件`;
+
+  SpreadsheetApp.getUi().alert('スキップ案件リスト', message, SpreadsheetApp.getUi().ButtonSet.OK);
 }
